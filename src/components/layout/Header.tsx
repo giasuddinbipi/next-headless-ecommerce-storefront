@@ -49,7 +49,7 @@ export default function Header() {
           </Link>
 
           <Link
-            href="/"
+            href="/shop"
             className="text-sm font-medium text-gray-700 transition hover:text-gray-950"
           >
             Shop
@@ -153,7 +153,7 @@ export default function Header() {
             </Link>
 
             <Link
-              href="/"
+              href="/shop"
               onClick={closeMobileMenu}
               className="rounded-lg px-3 py-3 font-medium text-gray-800 hover:bg-gray-100"
             >
