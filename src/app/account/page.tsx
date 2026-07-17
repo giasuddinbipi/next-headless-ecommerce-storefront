@@ -147,6 +147,11 @@ export default async function AccountPage() {
             >
               View cart
             </Link>
+            <Link
+                 href="/account/addresses"
+                className="rounded-lg border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-800 transition hover:bg-gray-100">
+                Manage addresses
+            </Link>
           </div>
         </header>
 
