@@ -123,7 +123,9 @@ export type GetProductsPageOptions = {
 export type WooCommerceOrderAddress = {
   first_name: string;
   last_name: string;
+  company?: string;
   address_1: string;
+  address_2?: string;
   city: string;
   state: string;
   postcode: string;
@@ -162,6 +164,14 @@ export type CreateOrderInput = {
   }>;
 };
 
+export type WooCommerceOrderLineItemMetaData = {
+  id: number;
+  key: string;
+  value: unknown;
+  display_key?: string;
+  display_value?: string;
+};
+
 export type WooCommerceOrderLineItem = {
   id: number;
   name: string;
@@ -169,7 +179,10 @@ export type WooCommerceOrderLineItem = {
   variation_id: number;
   quantity: number;
   subtotal: string;
+  subtotal_tax?: string;
   total: string;
+  total_tax?: string;
+  meta_data?: WooCommerceOrderLineItemMetaData[];
 };
 
 export type WooCommerceOrderShippingLine = {
@@ -194,19 +207,19 @@ export type WooCommerceOrder = {
 
   currency: string;
   total: string;
-
   customer_id: number;
-
   date_created: string;
 
   payment_method: string;
   payment_method_title: string;
 
-  line_items:
-    WooCommerceOrderLineItem[];
+  billing: WooCommerceOrderAddress;
+  shipping: WooCommerceOrderAddress;
 
-  shipping_lines:
-    WooCommerceOrderShippingLine[];
+  line_items: WooCommerceOrderLineItem[];
+  shipping_lines: WooCommerceOrderShippingLine[];
+
+  customer_note?: string;
 };
 
 function getEnvironmentVariable(name: string): string {
@@ -748,4 +761,68 @@ export async function getProductVariations(
     (variation) =>
       variation.status === "publish",
   );
+}
+
+export async function getCustomerOrderById(
+  orderId: number,
+  customerId: number,
+): Promise<WooCommerceOrder | null> {
+  if (
+    !Number.isInteger(orderId) ||
+    orderId < 1 ||
+    !Number.isInteger(customerId) ||
+    customerId < 1
+  ) {
+    return null;
+  }
+
+  const { storeUrl } =
+    getWooCommerceCredentials();
+
+  const endpoint = new URL(
+    `/wp-json/wc/v3/orders/${orderId}`,
+    storeUrl,
+  );
+
+  const response =
+    await wooCommerceRequest(endpoint);
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `WooCommerce order request failed with status ${response.status}.`,
+    );
+  }
+
+  const data: unknown =
+    await response.json();
+
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    !("id" in data) ||
+    !("customer_id" in data)
+  ) {
+    throw new Error(
+      "WooCommerce returned an invalid order response.",
+    );
+  }
+
+  const order =
+    data as WooCommerceOrder;
+
+  /*
+   * Critical authorization check:
+   * A customer may only view their own order.
+   */
+  if (
+    order.customer_id !== customerId
+  ) {
+    return null;
+  }
+
+  return order;
 }

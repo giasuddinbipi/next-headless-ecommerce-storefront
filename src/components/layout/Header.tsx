@@ -1,25 +1,68 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
+import {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useCartStore } from "@/store/cart-store";
 
 export default function Header() {
   const [mounted, setMounted] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const { data: session, status } = useSession();
+  const [mobileMenuOpen, setMobileMenuOpen] =
+    useState(false);
 
-  const items = useCartStore((state) => state.items);
+  const pathname = usePathname();
+
+  const {
+    data: session,
+    status,
+    update,
+  } = useSession();
+
+  const lastPathnameRef =
+    useRef<string | null>(null);
+
+  const items = useCartStore(
+    (state) => state.items,
+  );
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  /*
+   * Login server action redirect করার পর
+   * client-side SessionProvider-এর session
+   * refresh করে।
+   */
+  useEffect(() => {
+    if (
+      lastPathnameRef.current === pathname
+    ) {
+      return;
+    }
+
+    lastPathnameRef.current = pathname;
+
+    void update();
+  }, [pathname, update]);
+
+  /*
+   * Page পরিবর্তন হলে mobile menu বন্ধ হবে।
+   */
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
+
   const totalItems = items.reduce(
-    (total, item) => total + item.quantity,
+    (total, item) =>
+      total + item.quantity,
     0,
   );
 
@@ -68,7 +111,8 @@ export default function Header() {
             Shop
           </Link>
 
-          {status === "authenticated" && (
+          {status ===
+            "authenticated" && (
             <Link
               href="/account"
               className="text-sm font-medium text-gray-700 transition hover:text-gray-950"
@@ -83,7 +127,8 @@ export default function Header() {
           {/* Authentication controls */}
           {status === "loading" ? (
             <div className="h-9 w-16 animate-pulse rounded-lg bg-gray-200 sm:w-24" />
-          ) : status === "authenticated" ? (
+          ) : status ===
+            "authenticated" ? (
             <>
               <Link
                 href="/account"
@@ -118,7 +163,7 @@ export default function Header() {
             </div>
           )}
 
-          {/* Cart button */}
+          {/* Cart */}
           <Link
             href="/cart"
             onClick={closeMobileMenu}
@@ -148,21 +193,32 @@ export default function Header() {
               />
             </svg>
 
-            {mounted && totalItems > 0 && (
-              <span className="absolute -right-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
-                {totalItems > 99 ? "99+" : totalItems}
-              </span>
-            )}
+            {mounted &&
+              totalItems > 0 && (
+                <span className="absolute -right-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
+                  {totalItems > 99
+                    ? "99+"
+                    : totalItems}
+                </span>
+              )}
           </Link>
 
           {/* Mobile menu button */}
           <button
             type="button"
-            aria-label="Toggle navigation menu"
-            aria-expanded={mobileMenuOpen}
+            aria-label={
+              mobileMenuOpen
+                ? "Close navigation menu"
+                : "Open navigation menu"
+            }
+            aria-expanded={
+              mobileMenuOpen
+            }
             aria-controls="mobile-navigation"
             onClick={() =>
-              setMobileMenuOpen((current) => !current)
+              setMobileMenuOpen(
+                (current) => !current,
+              )
             }
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-gray-800 transition hover:bg-gray-100 md:hidden"
           >
@@ -206,7 +262,8 @@ export default function Header() {
           className="border-t border-gray-200 bg-white px-4 py-4 md:hidden"
         >
           <div className="mx-auto flex max-w-7xl flex-col">
-            {status === "authenticated" && (
+            {status ===
+              "authenticated" && (
               <div className="mb-3 rounded-xl bg-gray-50 px-3 py-3">
                 <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
                   Signed in as
@@ -216,9 +273,13 @@ export default function Header() {
                   {customerName}
                 </p>
 
-                {session.user.email && (
+                {session.user
+                  .email && (
                   <p className="mt-1 truncate text-xs text-gray-500">
-                    {session.user.email}
+                    {
+                      session.user
+                        .email
+                    }
                   </p>
                 )}
               </div>
@@ -245,16 +306,24 @@ export default function Header() {
               onClick={closeMobileMenu}
               className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
             >
-              Cart ({mounted ? totalItems : 0})
+              Cart (
+              {mounted
+                ? totalItems
+                : 0}
+              )
             </Link>
 
-            {status === "loading" ? (
+            {status ===
+            "loading" ? (
               <div className="mt-2 h-11 animate-pulse rounded-lg bg-gray-200" />
-            ) : status === "authenticated" ? (
+            ) : status ===
+              "authenticated" ? (
               <>
                 <Link
                   href="/account"
-                  onClick={closeMobileMenu}
+                  onClick={
+                    closeMobileMenu
+                  }
                   className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
                 >
                   My account
@@ -272,7 +341,9 @@ export default function Header() {
               <>
                 <Link
                   href="/login"
-                  onClick={closeMobileMenu}
+                  onClick={
+                    closeMobileMenu
+                  }
                   className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
                 >
                   Login
@@ -280,7 +351,9 @@ export default function Header() {
 
                 <Link
                   href="/register"
-                  onClick={closeMobileMenu}
+                  onClick={
+                    closeMobileMenu
+                  }
                   className="mt-2 rounded-lg bg-gray-900 px-3 py-3 text-center font-semibold text-white transition hover:bg-gray-700"
                 >
                   Create account

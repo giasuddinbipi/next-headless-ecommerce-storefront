@@ -282,6 +282,12 @@ export default async function AccountPage() {
                         )}
                       </div>
 
+                    <Link
+                         href={`/account/orders/${order.id}`}
+                        className="mt-5 inline-flex rounded-lg border border-gray-300 px-5 py-3 text-sm font-semibold text-gray-800 transition hover:bg-gray-100">
+                        View order details
+                    </Link>
+
                       <div className="mt-5 flex flex-wrap justify-between gap-3 border-t border-gray-200 pt-5 text-sm text-gray-600">
                         <span>
                           Payment:{" "}
