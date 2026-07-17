@@ -1,14 +1,24 @@
-import { NextResponse } from "next/server";
+import {
+  type NextRequest,
+  NextResponse,
+} from "next/server";
 
 import {
   createWooCommerceOrder,
+  getProductVariations,
   getProductsByIds,
+  type WooCommerceVariation,
 } from "@/lib/woocommerce";
 
 export const runtime = "nodejs";
 
-type RequestItem = {
-  id: number;
+const MAXIMUM_BODY_SIZE = 20_000;
+const MAXIMUM_CART_ITEMS = 50;
+const MAXIMUM_ITEM_QUANTITY = 20;
+
+type NormalizedItem = {
+  productId: number;
+  variationId?: number;
   quantity: number;
 };
 
@@ -63,12 +73,169 @@ function validatePhone(
   );
 }
 
+function isSameOrigin(
+  request: NextRequest,
+): boolean {
+  const origin =
+    request.headers.get("origin");
+
+  const host =
+    request.headers.get(
+      "x-forwarded-host",
+    ) ??
+    request.headers.get("host");
+
+  if (!origin || !host) {
+    return (
+      process.env.NODE_ENV !==
+      "production"
+    );
+  }
+
+  try {
+    return (
+      new URL(origin).host === host
+    );
+  } catch {
+    return false;
+  }
+}
+
+function validatePurchasableItem(
+  item: {
+    name?: string;
+    price: string;
+    purchasable: boolean;
+    stock_status:
+      | "instock"
+      | "outofstock"
+      | "onbackorder";
+    manage_stock: boolean;
+    stock_quantity: number | null;
+  },
+  quantity: number,
+): string | null {
+  const name =
+    item.name || "This product";
+
+  if (
+    !item.purchasable ||
+    !item.price
+  ) {
+    return `${name} is not currently purchasable.`;
+  }
+
+  if (
+    item.stock_status ===
+    "outofstock"
+  ) {
+    return `${name} is currently out of stock.`;
+  }
+
+  if (
+    item.manage_stock &&
+    item.stock_quantity !== null &&
+    quantity > item.stock_quantity
+  ) {
+    return `Only ${item.stock_quantity} units of ${name} are available.`;
+  }
+
+  return null;
+}
+
 export async function POST(
-  request: Request,
+  request: NextRequest,
 ) {
   try {
-    const body: unknown =
-      await request.json();
+    if (!isSameOrigin(request)) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid request origin.",
+        },
+        {
+          status: 403,
+        },
+      );
+    }
+
+    const contentType =
+      request.headers.get(
+        "content-type",
+      ) ?? "";
+
+    if (
+      !contentType
+        .toLowerCase()
+        .startsWith(
+          "application/json",
+        )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Content type must be application/json.",
+        },
+        {
+          status: 415,
+        },
+      );
+    }
+
+    const declaredLength = Number(
+      request.headers.get(
+        "content-length",
+      ) ?? 0,
+    );
+
+    if (
+      declaredLength >
+      MAXIMUM_BODY_SIZE
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Checkout request is too large.",
+        },
+        {
+          status: 413,
+        },
+      );
+    }
+
+    const rawBody =
+      await request.text();
+
+    if (
+      rawBody.length >
+      MAXIMUM_BODY_SIZE
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Checkout request is too large.",
+        },
+        {
+          status: 413,
+        },
+      );
+    }
+
+    let body: unknown;
+
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid JSON request.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
 
     if (!isRecord(body)) {
       return NextResponse.json(
@@ -82,7 +249,44 @@ export async function POST(
       );
     }
 
-    const customer = body.customer;
+    /*
+     * Honeypot field. Human customers
+     * should never fill this.
+     */
+    if (
+      readString(
+        body,
+        "website",
+        200,
+      )
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Checkout request rejected.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    if (
+      body.termsAccepted !== true
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Please accept the terms before placing your order.",
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    const customer =
+      body.customer;
 
     if (!isRecord(customer)) {
       return NextResponse.json(
@@ -226,27 +430,56 @@ export async function POST(
     }
 
     const itemMap =
-      new Map<number, number>();
+      new Map<
+        string,
+        NormalizedItem
+      >();
 
     for (const rawItem of body.items) {
       if (!isRecord(rawItem)) {
-        continue;
+        return NextResponse.json(
+          {
+            error:
+              "One or more cart items are invalid.",
+          },
+          {
+            status: 400,
+          },
+        );
       }
 
       const productId = Number(
-        rawItem.id,
+        rawItem.productId,
       );
+
+      const rawVariationId =
+        rawItem.variationId;
+
+      const variationId =
+        rawVariationId ===
+          undefined ||
+        rawVariationId === null
+          ? undefined
+          : Number(rawVariationId);
 
       const quantity = Number(
         rawItem.quantity,
       );
 
       if (
-        !Number.isInteger(productId) ||
+        !Number.isInteger(
+          productId,
+        ) ||
         productId < 1 ||
         !Number.isInteger(quantity) ||
         quantity < 1 ||
-        quantity > 20
+        quantity >
+          MAXIMUM_ITEM_QUANTITY ||
+        (variationId !== undefined &&
+          (!Number.isInteger(
+            variationId,
+          ) ||
+            variationId < 1))
       ) {
         return NextResponse.json(
           {
@@ -259,27 +492,49 @@ export async function POST(
         );
       }
 
-      const currentQuantity =
-        itemMap.get(productId) ?? 0;
+      const cartKey =
+        variationId
+          ? `${productId}:${variationId}`
+          : String(productId);
 
-      itemMap.set(
+      const existing =
+        itemMap.get(cartKey);
+
+      const combinedQuantity =
+        (existing?.quantity ?? 0) +
+        quantity;
+
+      if (
+        combinedQuantity >
+        MAXIMUM_ITEM_QUANTITY
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Product quantity exceeds the allowed limit.",
+          },
+          {
+            status: 400,
+          },
+        );
+      }
+
+      itemMap.set(cartKey, {
         productId,
-        currentQuantity + quantity,
-      );
+        variationId,
+        quantity:
+          combinedQuantity,
+      });
     }
 
-    const items: RequestItem[] = [
-      ...itemMap.entries(),
-    ].map(
-      ([id, quantity]) => ({
-        id,
-        quantity,
-      }),
-    );
+    const items = [
+      ...itemMap.values(),
+    ];
 
     if (
       items.length === 0 ||
-      items.length > 50
+      items.length >
+        MAXIMUM_CART_ITEMS
     ) {
       return NextResponse.json(
         {
@@ -293,9 +548,14 @@ export async function POST(
     }
 
     const products =
-      await getProductsByIds(
-        items.map((item) => item.id),
-      );
+      await getProductsByIds([
+        ...new Set(
+          items.map(
+            (item) =>
+              item.productId,
+          ),
+        ),
+      ]);
 
     const productMap = new Map(
       products.map((product) => [
@@ -304,9 +564,23 @@ export async function POST(
       ]),
     );
 
+    const variationCache =
+      new Map<
+        number,
+        WooCommerceVariation[]
+      >();
+
+    const lineItems: Array<{
+      product_id: number;
+      variation_id?: number;
+      quantity: number;
+    }> = [];
+
     for (const item of items) {
       const product =
-        productMap.get(item.id);
+        productMap.get(
+          item.productId,
+        );
 
       if (!product) {
         return NextResponse.json(
@@ -321,11 +595,57 @@ export async function POST(
       }
 
       if (
-        product.type !== "simple"
+        product.type === "simple"
+      ) {
+        if (item.variationId) {
+          return NextResponse.json(
+            {
+              error: `${product.name} does not accept a variation.`,
+            },
+            {
+              status: 400,
+            },
+          );
+        }
+
+        const validationError =
+          validatePurchasableItem(
+            {
+              ...product,
+              name: product.name,
+            },
+            item.quantity,
+          );
+
+        if (validationError) {
+          return NextResponse.json(
+            {
+              error:
+                validationError,
+            },
+            {
+              status: 400,
+            },
+          );
+        }
+
+        lineItems.push({
+          product_id:
+            product.id,
+          quantity:
+            item.quantity,
+        });
+
+        continue;
+      }
+
+      if (
+        product.type !==
+        "variable"
       ) {
         return NextResponse.json(
           {
-            error: `${product.name} requires variation selection. Variable products will be added in a later step.`,
+            error: `${product.name} is not currently supported by checkout.`,
           },
           {
             status: 400,
@@ -333,13 +653,10 @@ export async function POST(
         );
       }
 
-      if (
-        !product.purchasable ||
-        !product.price
-      ) {
+      if (!item.variationId) {
         return NextResponse.json(
           {
-            error: `${product.name} is not currently purchasable.`,
+            error: `Please select the required options for ${product.name}.`,
           },
           {
             status: 400,
@@ -347,13 +664,34 @@ export async function POST(
         );
       }
 
-      if (
-        product.stock_status ===
-        "outofstock"
-      ) {
+      let variations =
+        variationCache.get(
+          product.id,
+        );
+
+      if (!variations) {
+        variations =
+          await getProductVariations(
+            product.id,
+          );
+
+        variationCache.set(
+          product.id,
+          variations,
+        );
+      }
+
+      const variation =
+        variations.find(
+          (candidate) =>
+            candidate.id ===
+            item.variationId,
+        );
+
+      if (!variation) {
         return NextResponse.json(
           {
-            error: `${product.name} is currently out of stock.`,
+            error: `The selected variation of ${product.name} is no longer available.`,
           },
           {
             status: 400,
@@ -361,21 +699,33 @@ export async function POST(
         );
       }
 
-      if (
-        product.manage_stock &&
-        product.stock_quantity !== null &&
-        item.quantity >
-          product.stock_quantity
-      ) {
+      const validationError =
+        validatePurchasableItem(
+          {
+            ...variation,
+            name: product.name,
+          },
+          item.quantity,
+        );
+
+      if (validationError) {
         return NextResponse.json(
           {
-            error: `Only ${product.stock_quantity} units of ${product.name} are available.`,
+            error:
+              validationError,
           },
           {
             status: 400,
           },
         );
       }
+
+      lineItems.push({
+        product_id: product.id,
+        variation_id:
+          variation.id,
+        quantity: item.quantity,
+      });
     }
 
     const deliveryCharge =
@@ -383,7 +733,7 @@ export async function POST(
         ? "80.00"
         : "150.00";
 
-    const address = {
+    const billingAddress = {
       first_name: firstName,
       last_name: lastName,
       address_1: address1,
@@ -395,29 +745,40 @@ export async function POST(
       phone,
     };
 
+    const shippingAddress = {
+      first_name: firstName,
+      last_name: lastName,
+      address_1: address1,
+      city,
+      state: district,
+      postcode,
+      country: "BD",
+    };
+
     const order =
       await createWooCommerceOrder({
         payment_method: "cod",
+
         payment_method_title:
           "Cash on delivery",
 
         set_paid: false,
         status: "pending",
 
-        billing: address,
-        shipping: address,
+        billing:
+          billingAddress,
 
-        line_items: items.map(
-          (item) => ({
-            product_id: item.id,
-            quantity: item.quantity,
-          }),
-        ),
+        shipping:
+          shippingAddress,
+
+        line_items:
+          lineItems,
 
         shipping_lines: [
           {
             method_id:
               "flat_rate",
+
             method_title:
               shippingArea === "dhaka"
                 ? "Delivery inside Dhaka"
@@ -443,9 +804,11 @@ export async function POST(
       {
         success: true,
         orderId: order.id,
-        orderNumber: order.number,
+        orderNumber:
+          order.number,
         status: order.status,
-        currency: order.currency,
+        currency:
+          order.currency,
         total: order.total,
       },
       {
@@ -453,6 +816,12 @@ export async function POST(
       },
     );
   } catch (error) {
+    /*
+     * Log detailed errors only on
+     * the server. Do not expose API
+     * keys or WooCommerce responses
+     * to customers.
+     */
     console.error(
       "Order creation failed:",
       error,
@@ -461,9 +830,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Order could not be created.",
+          "Order could not be created. Please try again.",
       },
       {
         status: 502,

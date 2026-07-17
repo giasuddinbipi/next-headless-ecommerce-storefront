@@ -7,6 +7,46 @@ export type WooCommerceImage = {
   alt: string;
 };
 
+export type WooCommerceProductAttribute = {
+  id: number;
+  name: string;
+  slug: string;
+  position: number;
+  visible: boolean;
+  variation: boolean;
+  options: string[];
+};
+
+export type WooCommerceVariationAttribute = {
+  id: number;
+  name: string;
+  option: string;
+};
+
+export type WooCommerceVariation = {
+  id: number;
+  status: string;
+  sku: string;
+
+  price: string;
+  regular_price: string;
+  sale_price: string;
+  on_sale: boolean;
+
+  purchasable: boolean;
+
+  stock_status:
+    | "instock"
+    | "outofstock"
+    | "onbackorder";
+
+  manage_stock: boolean;
+  stock_quantity: number | null;
+
+  image: WooCommerceImage | null;
+  attributes: WooCommerceVariationAttribute[];
+};
+
 export type WooCommerceCategoryReference = {
   id: number;
   name: string;
@@ -40,7 +80,12 @@ export type WooCommerceProduct = {
 
   images: WooCommerceImage[];
   categories: WooCommerceCategoryReference[];
+  attributes: WooCommerceProductAttribute[];
+
+  default_attributes: WooCommerceVariationAttribute[];
 };
+
+
 
 export type WooCommerceProductCategory = {
   id: number;
@@ -97,9 +142,10 @@ export type CreateOrderInput = {
   shipping: WooCommerceOrderAddress;
 
   line_items: Array<{
-    product_id: number;
-    quantity: number;
-  }>;
+  product_id: number;
+  variation_id?: number;
+  quantity: number;
+}>;
 
   shipping_lines: Array<{
     method_id: string;
@@ -508,4 +554,97 @@ export async function createWooCommerceOrder(
     });
 
   return response.json() as Promise<WooCommerceOrder>;
+}
+
+export async function getProductVariations(
+  productId: number,
+): Promise<WooCommerceVariation[]> {
+  if (
+    !Number.isInteger(productId) ||
+    productId < 1
+  ) {
+    return [];
+  }
+
+  const { storeUrl } =
+    getWooCommerceCredentials();
+
+  const createEndpoint = (page: number) => {
+    const endpoint = new URL(
+      `/wp-json/wc/v3/products/${productId}/variations`,
+      storeUrl,
+    );
+
+    endpoint.searchParams.set(
+      "per_page",
+      "100",
+    );
+
+    endpoint.searchParams.set(
+      "page",
+      String(page),
+    );
+
+    endpoint.searchParams.set(
+      "order",
+      "asc",
+    );
+
+    return endpoint;
+  };
+
+  const firstResponse =
+    await wooCommerceRequest(
+      createEndpoint(1),
+    );
+
+  const firstData: unknown =
+    await firstResponse.json();
+
+  if (!Array.isArray(firstData)) {
+    throw new Error(
+      "WooCommerce returned an invalid variations response.",
+    );
+  }
+
+  const variations =
+    firstData as WooCommerceVariation[];
+
+  const totalPages = Math.max(
+    1,
+    Number(
+      firstResponse.headers.get(
+        "X-WP-TotalPages",
+      ) ?? 1,
+    ),
+  );
+
+  for (
+    let page = 2;
+    page <= totalPages;
+    page += 1
+  ) {
+    const response =
+      await wooCommerceRequest(
+        createEndpoint(page),
+      );
+
+    const data: unknown =
+      await response.json();
+
+    if (!Array.isArray(data)) {
+      throw new Error(
+        "WooCommerce returned an invalid variations response.",
+      );
+    }
+
+    variations.push(
+      ...(data as WooCommerceVariation[]),
+    );
+  }
+
+  return variations.filter(
+    (variation) =>
+      variation.status === "publish",
+  );
 }

@@ -29,9 +29,7 @@ function formatPrice(
     currency: "BDT",
     maximumFractionDigits: 0,
   }).format(
-    Number.isFinite(price)
-      ? price
-      : 0,
+    Number.isFinite(price) ? price : 0,
   );
 }
 
@@ -51,9 +49,7 @@ export default function CheckoutPage() {
     useState("");
 
   const [orderResult, setOrderResult] =
-    useState<OrderResult | null>(
-      null,
-    );
+    useState<OrderResult | null>(null);
 
   const items = useCartStore(
     (state) => state.items,
@@ -68,10 +64,16 @@ export default function CheckoutPage() {
   }, []);
 
   const subtotal = items.reduce(
-    (total, item) =>
-      total +
-      Number(item.price || 0) *
-        item.quantity,
+    (total, item) => {
+      const itemPrice = Number(
+        item.price || 0,
+      );
+
+      return (
+        total +
+        itemPrice * item.quantity
+      );
+    },
     0,
   );
 
@@ -89,16 +91,19 @@ export default function CheckoutPage() {
     event.preventDefault();
 
     if (items.length === 0) {
+      setErrorMessage(
+        "Your cart is empty.",
+      );
+
       return;
     }
 
     setSubmitting(true);
     setErrorMessage("");
 
-    const formData =
-      new FormData(
-        event.currentTarget,
-      );
+    const formData = new FormData(
+      event.currentTarget,
+    );
 
     const customer = {
       firstName: String(
@@ -158,9 +163,29 @@ export default function CheckoutPage() {
             customer,
             shippingArea,
 
+            /*
+             * Hidden honeypot field.
+             * It should remain empty for
+             * real customers.
+             */
+            website: String(
+              formData.get("website") ??
+                "",
+            ),
+
+            termsAccepted:
+              formData.get(
+                "termsAccepted",
+              ) === "on",
+
             items: items.map(
               (item) => ({
-                id: item.id,
+                productId:
+                  item.productId,
+
+                variationId:
+                  item.variationId,
+
                 quantity:
                   item.quantity,
               }),
@@ -180,6 +205,20 @@ export default function CheckoutPage() {
         const message =
           typeof data === "object" &&
           data !== null &&
+          "error" in data &&
+          typeof data.error ===
+            "string"
+            ? data.error
+            : "Order could not be created.";
+
+        throw new Error(message);
+      }
+
+      if (
+        !("success" in data) ||
+        data.success !== true
+      ) {
+        const message =
           "error" in data &&
           typeof data.error ===
             "string"
@@ -238,7 +277,10 @@ export default function CheckoutPage() {
               </span>
 
               <span className="font-bold text-gray-900">
-                #{orderResult.orderNumber}
+                #
+                {
+                  orderResult.orderNumber
+                }
               </span>
             </div>
 
@@ -267,7 +309,7 @@ export default function CheckoutPage() {
 
           <Link
             href="/shop"
-            className="mt-8 inline-block rounded-xl bg-gray-900 px-7 py-4 font-semibold text-white hover:bg-gray-700"
+            className="mt-8 inline-block rounded-xl bg-gray-900 px-7 py-4 font-semibold text-white transition hover:bg-gray-700"
           >
             Continue shopping
           </Link>
@@ -291,7 +333,7 @@ export default function CheckoutPage() {
 
           <Link
             href="/shop"
-            className="mt-7 inline-block rounded-xl bg-gray-900 px-6 py-3 font-semibold text-white"
+            className="mt-7 inline-block rounded-xl bg-gray-900 px-6 py-3 font-semibold text-white transition hover:bg-gray-700"
           >
             Visit shop
           </Link>
@@ -316,6 +358,29 @@ export default function CheckoutPage() {
           onSubmit={handleSubmit}
           className="mt-8 grid gap-8 lg:grid-cols-[1fr_380px]"
         >
+          {/*
+           * Honeypot field:
+           * Real customers cannot see it.
+           * Bots may fill it, allowing the
+           * server to reject spam orders.
+           */}
+          <div
+            aria-hidden="true"
+            className="hidden"
+          >
+            <label htmlFor="website">
+              Website
+            </label>
+
+            <input
+              id="website"
+              name="website"
+              type="text"
+              tabIndex={-1}
+              autoComplete="off"
+            />
+          </div>
+
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-7">
             <h2 className="text-xl font-bold text-gray-900">
               Customer information
@@ -323,117 +388,153 @@ export default function CheckoutPage() {
 
             <div className="mt-6 grid gap-5 sm:grid-cols-2">
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="firstName"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   First name *
                 </label>
 
                 <input
                   required
+                  id="firstName"
                   name="firstName"
                   autoComplete="given-name"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="lastName"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Last name *
                 </label>
 
                 <input
                   required
+                  id="lastName"
                   name="lastName"
                   autoComplete="family-name"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="phone"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Phone number *
                 </label>
 
                 <input
                   required
+                  id="phone"
                   type="tel"
                   name="phone"
                   autoComplete="tel"
                   placeholder="01XXXXXXXXX"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="email"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Email
                 </label>
 
                 <input
+                  id="email"
                   type="email"
                   name="email"
                   autoComplete="email"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div className="sm:col-span-2">
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="address1"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Full address *
                 </label>
 
                 <input
                   required
+                  id="address1"
                   name="address1"
                   autoComplete="street-address"
                   placeholder="House, road, area"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="city"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   City / Upazila *
                 </label>
 
                 <input
                   required
+                  id="city"
                   name="city"
                   autoComplete="address-level2"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="district"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   District *
                 </label>
 
                 <input
                   required
+                  id="district"
                   name="district"
                   autoComplete="address-level1"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="postcode"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Postcode
                 </label>
 
                 <input
+                  id="postcode"
                   name="postcode"
                   autoComplete="postal-code"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
                 />
               </div>
 
               <div>
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="shippingArea"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Delivery area *
                 </label>
 
                 <select
+                  id="shippingArea"
                   value={shippingArea}
                   onChange={(event) =>
                     setShippingArea(
@@ -442,7 +543,7 @@ export default function CheckoutPage() {
                         | "outside",
                     )
                   }
-                  className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 outline-none focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 outline-none transition focus:border-gray-800"
                 >
                   <option value="dhaka">
                     Inside Dhaka — ৳80
@@ -455,15 +556,19 @@ export default function CheckoutPage() {
               </div>
 
               <div className="sm:col-span-2">
-                <label className="mb-2 block text-sm font-semibold">
+                <label
+                  htmlFor="note"
+                  className="mb-2 block text-sm font-semibold text-gray-800"
+                >
                   Order note
                 </label>
 
                 <textarea
+                  id="note"
                   name="note"
                   rows={4}
                   placeholder="Optional delivery instructions"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none focus:border-gray-800"
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none transition focus:border-gray-800"
                 />
               </div>
             </div>
@@ -477,7 +582,7 @@ export default function CheckoutPage() {
             <div className="mt-6 max-h-72 space-y-4 overflow-y-auto">
               {items.map((item) => (
                 <div
-                  key={item.id}
+                  key={item.cartKey}
                   className="flex justify-between gap-4 border-b border-gray-100 pb-4 text-sm"
                 >
                   <div>
@@ -485,13 +590,27 @@ export default function CheckoutPage() {
                       {item.name}
                     </p>
 
+                    {item.attributes
+                      .length > 0 && (
+                      <p className="mt-1 text-gray-500">
+                        {item.attributes
+                          .map(
+                            (
+                              attribute,
+                            ) =>
+                              `${attribute.name}: ${attribute.option}`,
+                          )
+                          .join(" · ")}
+                      </p>
+                    )}
+
                     <p className="mt-1 text-gray-500">
                       Quantity:{" "}
                       {item.quantity}
                     </p>
                   </div>
 
-                  <span className="font-semibold">
+                  <span className="font-semibold text-gray-900">
                     {formatPrice(
                       Number(
                         item.price,
@@ -506,6 +625,7 @@ export default function CheckoutPage() {
             <div className="mt-6 space-y-4 text-sm">
               <div className="flex justify-between text-gray-600">
                 <span>Subtotal</span>
+
                 <span>
                   {formatPrice(subtotal)}
                 </span>
@@ -513,6 +633,7 @@ export default function CheckoutPage() {
 
               <div className="flex justify-between text-gray-600">
                 <span>Delivery</span>
+
                 <span>
                   {formatPrice(
                     deliveryCharge,
@@ -520,8 +641,11 @@ export default function CheckoutPage() {
                 </span>
               </div>
 
-              <div className="flex justify-between border-t border-gray-200 pt-5 text-lg font-bold">
-                <span>Estimated total</span>
+              <div className="flex justify-between border-t border-gray-200 pt-5 text-lg font-bold text-gray-900">
+                <span>
+                  Estimated total
+                </span>
+
                 <span>
                   {formatPrice(
                     estimatedTotal,
@@ -536,10 +660,29 @@ export default function CheckoutPage() {
             </div>
 
             {errorMessage && (
-              <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700">
+              <div
+                role="alert"
+                className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700"
+              >
                 {errorMessage}
               </div>
             )}
+
+            <label className="mt-5 flex items-start gap-3 text-sm text-gray-700">
+              <input
+                required
+                type="checkbox"
+                name="termsAccepted"
+                className="mt-1 h-4 w-4 rounded border-gray-300"
+              />
+
+              <span>
+                I confirm that the order
+                and delivery information
+                is correct and agree to
+                the store terms.
+              </span>
+            </label>
 
             <button
               type="submit"
@@ -553,7 +696,7 @@ export default function CheckoutPage() {
 
             <Link
               href="/cart"
-              className="mt-4 block text-center text-sm font-semibold text-gray-700 hover:text-gray-950"
+              className="mt-4 block text-center text-sm font-semibold text-gray-700 transition hover:text-gray-950"
             >
               Return to cart
             </Link>

@@ -2,11 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-
-import {
-  useEffect,
-  useState,
-} from "react";
+import { useEffect, useState } from "react";
 
 import { useCartStore } from "@/store/cart-store";
 
@@ -43,11 +39,11 @@ export default function CartPage() {
     setMounted(true);
   }, []);
 
-  const subtotal = items.reduce(
-    (total, item) =>
-      total + Number(item.price || 0) * item.quantity,
-    0,
-  );
+  const subtotal = items.reduce((total, item) => {
+    const itemPrice = Number(item.price || 0);
+
+    return total + itemPrice * item.quantity;
+  }, 0);
 
   const totalItems = items.reduce(
     (total, item) => total + item.quantity,
@@ -99,7 +95,7 @@ export default function CartPage() {
           </p>
 
           <Link
-            href="/"
+            href="/shop"
             className="mt-7 inline-block rounded-xl bg-gray-900 px-6 py-3 font-semibold text-white transition hover:bg-gray-700"
           >
             Continue shopping
@@ -120,15 +116,14 @@ export default function CartPage() {
 
             <p className="mt-2 text-gray-600">
               {totalItems}{" "}
-              {totalItems === 1 ? "item" : "items"} in your
-              cart
+              {totalItems === 1 ? "item" : "items"} in your cart
             </p>
           </div>
 
           <button
             type="button"
             onClick={clearCart}
-            className="text-sm font-semibold text-red-600 hover:text-red-800"
+            className="text-sm font-semibold text-red-600 transition hover:text-red-800"
           >
             Clear cart
           </button>
@@ -138,12 +133,11 @@ export default function CartPage() {
           <section className="space-y-4">
             {items.map((item) => {
               const itemPrice = Number(item.price || 0);
-              const lineTotal =
-                itemPrice * item.quantity;
+              const lineTotal = itemPrice * item.quantity;
 
               return (
                 <article
-                  key={item.id}
+                  key={item.cartKey}
                   className="grid gap-5 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-[140px_1fr]"
                 >
                   <Link
@@ -167,34 +161,59 @@ export default function CartPage() {
 
                   <div className="flex flex-col justify-between">
                     <div>
-                      <Link
-                        href={`/products/${item.slug}`}
-                      >
-                        <h2 className="text-lg font-semibold text-gray-900 hover:text-blue-700">
+                      <Link href={`/products/${item.slug}`}>
+                        <h2 className="text-lg font-semibold text-gray-900 transition hover:text-blue-700">
                           {item.name}
                         </h2>
                       </Link>
 
+                      {item.attributes?.length > 0 && (
+                        <p className="mt-2 text-sm text-gray-600">
+                          {item.attributes
+                            .map(
+                              (attribute) =>
+                                `${attribute.name}: ${attribute.option}`,
+                            )
+                            .join(" · ")}
+                        </p>
+                      )}
+
                       <p className="mt-2 text-sm text-gray-600">
-                        Unit price:{" "}
-                        {formatPrice(itemPrice)}
+                        Unit price: {formatPrice(itemPrice)}
                       </p>
 
                       <p className="mt-2 font-bold text-gray-900">
-                        Total:{" "}
-                        {formatPrice(lineTotal)}
+                        Total: {formatPrice(lineTotal)}
                       </p>
+
+                      {item.stockStatus === "instock" && (
+                        <p className="mt-2 text-sm font-medium text-green-700">
+                          In stock
+                        </p>
+                      )}
+
+                      {item.stockStatus === "onbackorder" && (
+                        <p className="mt-2 text-sm font-medium text-yellow-700">
+                          Available on backorder
+                        </p>
+                      )}
+
+                      {item.stockStatus === "outofstock" && (
+                        <p className="mt-2 text-sm font-medium text-red-700">
+                          Currently out of stock
+                        </p>
+                      )}
                     </div>
 
                     <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
-                      <div className="flex items-center rounded-lg border border-gray-300">
+                      <div className="flex items-center overflow-hidden rounded-lg border border-gray-300">
                         <button
                           type="button"
                           aria-label={`Decrease ${item.name} quantity`}
                           onClick={() =>
-                            decreaseQuantity(item.id)
+                            decreaseQuantity(item.cartKey)
                           }
-                          className="h-10 w-10 text-lg font-semibold hover:bg-gray-100"
+                          className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100"
                         >
                           −
                         </button>
@@ -207,9 +226,9 @@ export default function CartPage() {
                           type="button"
                           aria-label={`Increase ${item.name} quantity`}
                           onClick={() =>
-                            increaseQuantity(item.id)
+                            increaseQuantity(item.cartKey)
                           }
-                          className="h-10 w-10 text-lg font-semibold hover:bg-gray-100"
+                          className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100"
                         >
                           +
                         </button>
@@ -218,9 +237,9 @@ export default function CartPage() {
                       <button
                         type="button"
                         onClick={() =>
-                          removeItem(item.id)
+                          removeItem(item.cartKey)
                         }
-                        className="text-sm font-semibold text-red-600 hover:text-red-800"
+                        className="text-sm font-semibold text-red-600 transition hover:text-red-800"
                       >
                         Remove
                       </button>
@@ -259,14 +278,15 @@ export default function CartPage() {
             </div>
 
             <Link
-                 href="/checkout"
-                 className="mt-6 block w-full rounded-xl bg-gray-900 px-5 py-4 text-center font-semibold text-white transition hover:bg-gray-700">
-                    Proceed to checkout
+              href="/checkout"
+              className="mt-6 block w-full rounded-xl bg-gray-900 px-5 py-4 text-center font-semibold text-white transition hover:bg-gray-700"
+            >
+              Proceed to checkout
             </Link>
 
             <Link
-              href="/"
-              className="mt-4 block text-center text-sm font-semibold text-gray-700 hover:text-gray-950"
+              href="/shop"
+              className="mt-4 block text-center text-sm font-semibold text-gray-700 transition hover:text-gray-950"
             >
               Continue shopping
             </Link>
