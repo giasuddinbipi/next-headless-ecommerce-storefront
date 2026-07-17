@@ -5,6 +5,8 @@ import Link from "next/link";
 
 import { notFound } from "next/navigation";
 
+import AddToCartButton from "@/components/cart/AddToCartButton";
+
 import {
   getProductBySlug,
   type WooCommerceProduct,
@@ -54,18 +56,32 @@ export async function generateMetadata({
   if (!product) {
     return {
       title: "Product not found",
+      description: "The requested product could not be found.",
     };
   }
 
-  const description =
+  const productDescription =
     htmlToPlainText(product.short_description) ||
-    htmlToPlainText(product.description);
+    htmlToPlainText(product.description) ||
+    `View ${product.name} in our online store.`;
 
   return {
     title: product.name,
-    description:
-      description.slice(0, 160) ||
-      `View ${product.name} in our online store.`,
+    description: productDescription.slice(0, 160),
+    openGraph: {
+      title: product.name,
+      description: productDescription.slice(0, 160),
+      images: product.images?.[0]?.src
+        ? [
+            {
+              url: product.images[0].src,
+              alt:
+                product.images[0].alt ||
+                product.name,
+            },
+          ]
+        : [],
+    },
   };
 }
 
@@ -92,21 +108,19 @@ export default async function ProductPage({
       <div className="mx-auto max-w-6xl">
         <Link
           href="/"
-          className="mb-8 inline-flex text-sm font-medium text-gray-600 hover:text-gray-900"
+          className="mb-8 inline-flex text-sm font-medium text-gray-600 transition hover:text-gray-900"
         >
           ← Back to products
         </Link>
 
         <div className="grid gap-10 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:grid-cols-2 md:p-8">
+          {/* Product images */}
           <section>
             <div className="relative aspect-square overflow-hidden rounded-xl bg-gray-100">
               {mainImage ? (
                 <Image
                   src={mainImage.src}
-                  alt={
-                    mainImage.alt ||
-                    product.name
-                  }
+                  alt={mainImage.alt || product.name}
                   fill
                   priority
                   sizes="(max-width: 768px) 100vw, 50vw"
@@ -125,31 +139,33 @@ export default async function ProductPage({
               )}
             </div>
 
-            {product.images.length > 1 && (
-              <div className="mt-4 grid grid-cols-4 gap-3">
-                {product.images
-                  .slice(1, 5)
-                  .map((image) => (
-                    <div
-                      key={image.id}
-                      className="relative aspect-square overflow-hidden rounded-lg border bg-gray-100"
-                    >
-                      <Image
-                        src={image.src}
-                        alt={
-                          image.alt ||
-                          product.name
-                        }
-                        fill
-                        sizes="120px"
-                        className="object-cover"
-                      />
-                    </div>
-                  ))}
-              </div>
-            )}
+            {product.images &&
+              product.images.length > 1 && (
+                <div className="mt-4 grid grid-cols-4 gap-3">
+                  {product.images
+                    .slice(1, 5)
+                    .map((image) => (
+                      <div
+                        key={image.id}
+                        className="relative aspect-square overflow-hidden rounded-lg border border-gray-200 bg-gray-100"
+                      >
+                        <Image
+                          src={image.src}
+                          alt={
+                            image.alt ||
+                            product.name
+                          }
+                          fill
+                          sizes="120px"
+                          className="object-cover"
+                        />
+                      </div>
+                    ))}
+                </div>
+              )}
           </section>
 
+          {/* Product information */}
           <section className="flex flex-col justify-center">
             <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">
               Product
@@ -159,7 +175,8 @@ export default async function ProductPage({
               {product.name}
             </h1>
 
-            <div className="mt-6 flex items-center gap-4">
+            {/* Price */}
+            <div className="mt-6 flex flex-wrap items-center gap-4">
               <span className="text-3xl font-bold text-gray-900">
                 {formatPrice(product.price)}
               </span>
@@ -174,6 +191,7 @@ export default async function ProductPage({
                 )}
             </div>
 
+            {/* Stock status */}
             <div className="mt-5">
               {product.stock_status ===
               "instock" ? (
@@ -192,23 +210,23 @@ export default async function ProductPage({
               )}
             </div>
 
+            {/* Description */}
             <p className="mt-7 whitespace-pre-line leading-8 text-gray-700">
               {description}
             </p>
 
-            <button
-              type="button"
-              disabled={
-                product.stock_status ===
-                "outofstock"
-              }
-              className="mt-8 rounded-xl bg-gray-900 px-6 py-4 font-semibold text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-400"
-            >
-              {product.stock_status ===
-              "outofstock"
-                ? "Currently unavailable"
-                : "Add to cart"}
-            </button>
+            {/* Functional cart button */}
+            <AddToCartButton
+              product={{
+                id: product.id,
+                name: product.name,
+                slug: product.slug,
+                price: product.price,
+                image: mainImage?.src,
+                stockStatus:
+                  product.stock_status,
+              }}
+            />
 
             <p className="mt-4 text-xs text-gray-500">
               Product ID: {product.id}
