@@ -133,6 +133,7 @@ export type WooCommerceOrderAddress = {
 };
 
 export type CreateOrderInput = {
+  customer_id?: number;
   payment_method: string;
   payment_method_title: string;
   set_paid: boolean;
@@ -161,12 +162,51 @@ export type CreateOrderInput = {
   }>;
 };
 
+export type WooCommerceOrderLineItem = {
+  id: number;
+  name: string;
+  product_id: number;
+  variation_id: number;
+  quantity: number;
+  subtotal: string;
+  total: string;
+};
+
+export type WooCommerceOrderShippingLine = {
+  id: number;
+  method_title: string;
+  total: string;
+};
+
 export type WooCommerceOrder = {
   id: number;
   number: string;
-  status: string;
+
+  status:
+    | "pending"
+    | "processing"
+    | "on-hold"
+    | "completed"
+    | "cancelled"
+    | "refunded"
+    | "failed"
+    | string;
+
   currency: string;
   total: string;
+
+  customer_id: number;
+
+  date_created: string;
+
+  payment_method: string;
+  payment_method_title: string;
+
+  line_items:
+    WooCommerceOrderLineItem[];
+
+  shipping_lines:
+    WooCommerceOrderShippingLine[];
 };
 
 function getEnvironmentVariable(name: string): string {
@@ -284,6 +324,67 @@ function getProductSorting(sort: ProductSort) {
       };
   }
 }
+
+export async function getCustomerOrders(
+  customerId: number,
+): Promise<WooCommerceOrder[]> {
+  if (
+    !Number.isInteger(customerId) ||
+    customerId < 1
+  ) {
+    return [];
+  }
+
+  const { storeUrl } =
+    getWooCommerceCredentials();
+
+  const endpoint = new URL(
+    "/wp-json/wc/v3/orders",
+    storeUrl,
+  );
+
+  endpoint.searchParams.set(
+    "customer",
+    String(customerId),
+  );
+
+  endpoint.searchParams.set(
+    "status",
+    "any",
+  );
+
+  endpoint.searchParams.set(
+    "orderby",
+    "date",
+  );
+
+  endpoint.searchParams.set(
+    "order",
+    "desc",
+  );
+
+  endpoint.searchParams.set(
+    "per_page",
+    "50",
+  );
+
+  const response =
+    await wooCommerceRequest(
+      endpoint,
+    );
+
+  const data: unknown =
+    await response.json();
+
+  if (!Array.isArray(data)) {
+    throw new Error(
+      "WooCommerce returned an invalid orders response.",
+    );
+  }
+
+  return data as WooCommerceOrder[];
+}
+
 
 export async function getProductsPage({
   page = 1,

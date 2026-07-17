@@ -10,6 +10,8 @@ import {
   type WooCommerceVariation,
 } from "@/lib/woocommerce";
 
+import { auth } from "@/auth";
+
 export const runtime = "nodejs";
 
 const MAXIMUM_BODY_SIZE = 20_000;
@@ -147,6 +149,17 @@ export async function POST(
   request: NextRequest,
 ) {
   try {
+    const session = await auth();
+
+const customerId =
+  session?.user?.customerId &&
+  session.user.customerId > 0
+    ? session.user.customerId
+    : 0;
+
+const accountEmail =
+  session?.user?.email?.trim() ??
+  "";
     if (!isSameOrigin(request)) {
       return NextResponse.json(
         {
@@ -318,11 +331,14 @@ export async function POST(
       30,
     );
 
-    const email = readString(
-      customer,
-      "email",
-      120,
-    );
+    const formEmail = readString(
+  customer,
+  "email",
+  120,
+);
+
+const email =
+  accountEmail || formEmail;
 
     const address1 = readString(
       customer,
@@ -757,6 +773,7 @@ export async function POST(
 
     const order =
       await createWooCommerceOrder({
+        customer_id: customerId,
         payment_method: "cod",
 
         payment_method_title:
