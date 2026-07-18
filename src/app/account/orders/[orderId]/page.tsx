@@ -6,6 +6,8 @@ import {
   redirect,
 } from "next/navigation";
 
+import ReorderButton from "@/components/account/ReorderButton";
+
 import CancelOrderButton from "@/components/account/CancelOrderButton";
 
 import {
@@ -376,6 +378,12 @@ export default async function OrderDetailsPage({
     order.status,
   ) &&
   !order.date_paid;
+
+  const canReorder =
+  Array.isArray(
+    order.line_items,
+  ) &&
+  order.line_items.length > 0;
 
   const orderDate =
     formatDate(order.date_created);
@@ -762,40 +770,48 @@ export default async function OrderDetailsPage({
           </aside>
         </div>
 
-        <div className="mt-10 flex flex-wrap gap-3">
-          <Link
-          href={`/account/orders/${order.id}/invoice`}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-xl bg-blue-700 px-6 py-3 font-semibold text-white transition hover:bg-blue-800"
-          >
-            View printable invoice
-          </Link>
+<div className="mt-10 flex flex-wrap items-start gap-3">
+  {canReorder && (
+    <ReorderButton
+      orderId={order.id}
+      orderNumber={
+        order.number
+      }
+    />
+  )}
 
-          <Link
-            href="/account"
-            className="rounded-xl bg-gray-900 px-6 py-3 font-semibold text-white transition hover:bg-gray-700"
-          >
-            Back to my orders
-          </Link>
+  <Link
+    href={`/account/orders/${order.id}/invoice`}
+    target="_blank"
+    rel="noreferrer"
+    className="inline-flex min-h-12 items-center justify-center rounded-xl bg-blue-700 px-6 font-semibold text-white transition hover:bg-blue-800"
+  >
+    View printable invoice
+  </Link>
 
-          <Link
-            href="/shop"
-            className="rounded-xl border border-gray-300 bg-white px-6 py-3 font-semibold text-gray-800 transition hover:bg-gray-100"
-          >
-            Continue shopping
-          </Link>
-          
-          {canCancelOrder && (
-            <CancelOrderButton
-              orderId={order.id}
-              orderNumber={
-                order.number
-              }
-            />
-        )}
+  <Link
+    href="/account"
+    className="inline-flex min-h-12 items-center justify-center rounded-xl bg-gray-900 px-6 font-semibold text-white transition hover:bg-gray-700"
+  >
+    Back to my orders
+  </Link>
 
-        </div>
+  <Link
+    href="/shop"
+    className="inline-flex min-h-12 items-center justify-center rounded-xl border border-gray-300 bg-white px-6 font-semibold text-gray-800 transition hover:bg-gray-100"
+  >
+    Continue shopping
+  </Link>
+
+  {canCancelOrder && (
+    <CancelOrderButton
+      orderId={order.id}
+      orderNumber={
+        order.number
+      }
+    />
+  )}
+</div>
       </div>
     </main>
   );
