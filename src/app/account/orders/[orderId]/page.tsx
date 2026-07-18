@@ -752,6 +752,15 @@ export default async function OrderDetailsPage({
 
         <div className="mt-10 flex flex-wrap gap-3">
           <Link
+          href={`/account/orders/${order.id}/invoice`}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-xl bg-blue-700 px-6 py-3 font-semibold text-white transition hover:bg-blue-800"
+          >
+            View printable invoice
+          </Link>
+
+          <Link
             href="/account"
             className="rounded-xl bg-gray-900 px-6 py-3 font-semibold text-white transition hover:bg-gray-700"
           >
