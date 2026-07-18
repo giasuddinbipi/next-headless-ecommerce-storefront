@@ -6,16 +6,6 @@ import {
 import { auth } from "@/auth";
 
 import {
-  getCustomerProfile,
-} from "@/lib/customer";
-
-import {
-  CouponValidationError,
-  validateCouponForCart,
-  type ValidatedCouponResult,
-} from "@/lib/coupons";
-
-import {
   calculateCheckoutTotals,
   CheckoutTotalsError,
   type CheckoutTotalsResult,
@@ -26,13 +16,34 @@ import type {
 } from "@/lib/cart-validation";
 
 import {
-  prepareSecureCheckout,
-  SecureCheckoutError,
-} from "@/lib/secure-checkout";
+  CouponValidationError,
+  validateCouponForCart,
+  type ValidatedCouponResult,
+} from "@/lib/coupons";
+
+import {
+  getCustomerProfile,
+} from "@/lib/customer";
+
+import {
+  completeOrderIdempotency,
+  createOrderIdempotencyScope,
+  createOrderRequestFingerprint,
+  OrderIdempotencyError,
+  readOrderIdempotencyKey,
+  releaseOrderIdempotency,
+  reserveOrderIdempotency,
+  type OrderIdempotencyReservation,
+} from "@/lib/order-idempotency";
 
 import {
   sendWooCommerceOrderDetailsEmail,
 } from "@/lib/order-email";
+
+import {
+  prepareSecureCheckout,
+  SecureCheckoutError,
+} from "@/lib/secure-checkout";
 
 import {
   createWooCommerceOrder,
@@ -352,6 +363,29 @@ function formatMoney(
   value: number,
 ): string {
   return value.toFixed(2);
+}
+
+/* =========================================================
+   Response headers
+========================================================= */
+
+function getOrderResponseHeaders({
+  replayed = false,
+}: {
+  replayed?: boolean;
+} = {}): Record<string, string> {
+  return {
+    "Cache-Control":
+      "no-store, max-age=0",
+
+    "X-Content-Type-Options":
+      "nosniff",
+
+    "Idempotency-Replayed":
+      replayed
+        ? "true"
+        : "false",
+  };
 }
 
 /* =========================================================
@@ -1553,10 +1587,6 @@ async function validateOrderCoupon({
       ?.trim()
       .toLowerCase() || "";
 
-  /*
-   * Logged-in customer হলে WooCommerce
-   * customer account-এর email trusted হবে।
-   */
   if (customerId > 0) {
     try {
       const customer =
@@ -1772,6 +1802,19 @@ function buildTrustedOrderLines(
 export async function POST(
   request: NextRequest,
 ) {
+  let idempotencyReservation:
+    OrderIdempotencyReservation | null =
+      null;
+
+  /*
+   * WooCommerce request শুরু হয়ে গেলে
+   * reservation release করা হবে না।
+   *
+   * Error হলেও order তৈরি হয়ে থাকতে পারে।
+   */
+  let orderCreationStarted =
+    false;
+
   try {
     if (
       !isSameOrigin(request)
@@ -1783,6 +1826,11 @@ export async function POST(
       );
     }
 
+    const idempotencyKey =
+      readOrderIdempotencyKey(
+        request,
+      );
+
     const rawBody =
       await parseRequestBody(
         request,
@@ -1793,9 +1841,6 @@ export async function POST(
         rawBody,
       );
 
-    /*
-     * Authentication এবং customer identity।
-     */
     const session =
       await auth();
 
@@ -1814,8 +1859,52 @@ export async function POST(
         : 0;
 
     /*
-     * Shipping amount browser থেকে নেওয়া হবে না।
-     * Environment/server configuration authoritative।
+     * Stable server-side request fingerprint।
+     *
+     * Browser-generated fingerprint trusted নয়।
+     */
+    const requestFingerprint =
+      createOrderRequestFingerprint({
+        version: 1,
+
+        paymentMethod:
+          "cod",
+
+        customerId,
+
+        billing:
+          normalizedRequest.billing,
+
+        shipping:
+          normalizedRequest.shipping,
+
+        shippingArea:
+          normalizedRequest
+            .shippingArea,
+
+        items:
+          normalizedRequest.items,
+
+        customerNote:
+          normalizedRequest
+            .customerNote,
+
+        couponCode:
+          normalizedRequest
+            .couponCode,
+      });
+
+    const idempotencyScope =
+      createOrderIdempotencyScope({
+        customerId,
+
+        billingEmail:
+          normalizedRequest
+            .billing.email,
+      });
+
+    /*
+     * Shipping fee browser থেকে নেওয়া হয় না।
      */
     const shipping =
       getShippingConfiguration(
@@ -1824,14 +1913,8 @@ export async function POST(
       );
 
     /*
-     * Secure cart validation:
-     *
-     * - Current product
-     * - Current variation
-     * - Selected attributes
-     * - Current stock
-     * - Current price
-     * - Purchasable state
+     * Current catalogue, variation, stock,
+     * quantity এবং price validation।
      */
     const secureCheckout =
       await prepareSecureCheckout({
@@ -1862,8 +1945,8 @@ export async function POST(
     }
 
     /*
-     * Coupon checkout-এর সময় আবার
-     * server-side validate হবে।
+     * Coupon order creation-এর সময়
+     * আবার server-side validate হবে।
      */
     const validatedCoupon =
       await validateOrderCoupon({
@@ -1961,10 +2044,6 @@ export async function POST(
       );
     }
 
-    /*
-     * Shipping object-এ billing-only email
-     * এবং phone পাঠানো হবে না।
-     */
     const {
       email:
         _shippingEmail,
@@ -2051,6 +2130,22 @@ export async function POST(
 
         value:
           "server-v1",
+      },
+
+      {
+        key:
+          "_headless_order_request_fingerprint",
+
+        value:
+          requestFingerprint,
+      },
+
+      {
+        key:
+          "_headless_order_idempotency",
+
+        value:
+          "redis-v1",
       },
 
       ...(validatedCoupon
@@ -2143,19 +2238,98 @@ export async function POST(
         orderMetaData,
     };
 
+    /*
+     * সব validation সফল হওয়ার পরে এবং
+     * WooCommerce request-এর ঠিক আগে
+     * atomic reservation নেওয়া হচ্ছে।
+     */
+    const idempotencyDecision =
+      await reserveOrderIdempotency({
+        idempotencyKey,
+
+        scope:
+          idempotencyScope,
+
+        fingerprint:
+          requestFingerprint,
+      });
+
+    if (
+      idempotencyDecision.kind ===
+      "replay"
+    ) {
+      return NextResponse.json(
+        {
+          ...idempotencyDecision
+            .response.body,
+
+          idempotencyReplayed:
+            true,
+        },
+
+        {
+          status:
+            idempotencyDecision
+              .response.status,
+
+          headers:
+            getOrderResponseHeaders({
+              replayed: true,
+            }),
+        },
+      );
+    }
+
+    if (
+      idempotencyDecision.kind ===
+      "in_progress"
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          error:
+            "This order request is still being processed. Please wait a moment and try again.",
+
+          code:
+            "order_request_in_progress",
+        },
+
+        {
+          status: 409,
+
+          headers: {
+            ...getOrderResponseHeaders(),
+
+            "Retry-After":
+              "2",
+          },
+        },
+      );
+    }
+
+    const activeReservation =
+      idempotencyDecision
+        .reservation;
+
+    idempotencyReservation =
+      activeReservation;
+
+    /*
+     * এই point-এর পরে result uncertain হলে
+     * reservation release করা হবে না।
+     */
+    orderCreationStarted =
+      true;
+
     const order =
       await createWooCommerceOrder(
         orderInput,
       );
 
     /*
-     * WooCommerce-created order totals-এর সঙ্গে
-     * server calculation compare করা হবে।
-     *
-     * Order ইতোমধ্যে তৈরি হলে mismatch-এর কারণে
-     * failure response দেওয়া হবে না, কারণ এতে
-     * customer পুনরায় submit করে duplicate order
-     * তৈরি করতে পারে।
+     * WooCommerce-created total এবং
+     * server-calculated total compare।
      */
     const expectedTotal =
       Number(
@@ -2268,11 +2442,8 @@ export async function POST(
     }
 
     /*
-     * Email ব্যর্থ হলেও successful order
+     * Email failure হলেও successful order
      * response ব্যর্থ করা হবে না।
-     *
-     * Failure response দিলে customer আবার
-     * submit করে duplicate order তৈরি করতে পারে।
      */
     let confirmationEmailSent =
       false;
@@ -2302,17 +2473,93 @@ export async function POST(
       );
     }
 
-    return NextResponse.json(
-      {
-        success: true,
+    const successResponseBody:
+      Record<string, unknown> = {
+      success: true,
 
-        message:
-          "Your order was placed successfully.",
+      message:
+        "Your order was placed successfully.",
 
-        orderId:
+      orderId:
+        order.id,
+
+      orderNumber:
+        order.number,
+
+      status:
+        order.status,
+
+      total:
+        order.total,
+
+      currency:
+        order.currency,
+
+      emailSent:
+        confirmationEmailSent,
+
+      totalsVerified,
+
+      idempotencyReplayed:
+        false,
+
+      idempotencyStored:
+        true,
+
+      serverCalculatedTotals: {
+        currency:
+          trustedTotals.currency,
+
+        subtotal:
+          trustedTotals.subtotal,
+
+        discount:
+          trustedTotals.discount,
+
+        shipping:
+          trustedTotals.shipping,
+
+        total:
+          trustedTotals.total,
+
+        freeShipping:
+          trustedTotals
+            .freeShipping,
+      },
+
+      discountTotal:
+        order.discount_total ??
+        "0",
+
+      shippingTotal:
+        order.shipping_total ??
+        "0",
+
+      coupon:
+        validatedCoupon
+          ? {
+              code:
+                validatedCoupon
+                  .code,
+
+              discount:
+                order
+                  .discount_total ??
+                validatedCoupon
+                  .discount
+                  .toFixed(2),
+
+              freeShipping:
+                validatedCoupon
+                  .freeShipping,
+            }
+          : null,
+
+      order: {
+        id:
           order.id,
 
-        orderNumber:
+        number:
           order.number,
 
         status:
@@ -2324,101 +2571,116 @@ export async function POST(
         currency:
           order.currency,
 
-        emailSent:
-          confirmationEmailSent,
-
-        totalsVerified,
-
-        serverCalculatedTotals: {
-          currency:
-            trustedTotals.currency,
-
-          subtotal:
-            trustedTotals.subtotal,
-
-          discount:
-            trustedTotals.discount,
-
-          shipping:
-            trustedTotals.shipping,
-
-          total:
-            trustedTotals.total,
-
-          freeShipping:
-            trustedTotals
-              .freeShipping,
-        },
-
         discountTotal:
-          order.discount_total ??
+          order
+            .discount_total ??
           "0",
 
         shippingTotal:
-          order.shipping_total ??
+          order
+            .shipping_total ??
           "0",
+      },
+    };
 
-        coupon:
-          validatedCoupon
-            ? {
-                code:
-                  validatedCoupon
-                    .code,
+    /*
+     * Successful response Redis-এ cache।
+     */
+    try {
+      await completeOrderIdempotency({
+        reservation:
+          activeReservation,
 
-                discount:
-                  order
-                    .discount_total ??
-                  validatedCoupon
-                    .discount
-                    .toFixed(2),
+        response: {
+          status: 201,
 
-                freeShipping:
-                  validatedCoupon
-                    .freeShipping,
-              }
-            : null,
+          body:
+            successResponseBody,
+        },
+      });
+    } catch (completionError) {
+      /*
+       * Order ইতোমধ্যে তৈরি হয়েছে।
+       * Redis failure-এর কারণে order failure
+       * response দেওয়া হবে না।
+       */
+      successResponseBody
+        .idempotencyStored =
+        false;
 
-        order: {
-          id:
+      console.error(
+        "Order idempotency completion failed after order creation:",
+        {
+          orderId:
             order.id,
 
-          number:
+          orderNumber:
             order.number,
 
-          status:
-            order.status,
-
-          total:
-            order.total,
-
-          currency:
-            order.currency,
-
-          discountTotal:
-            order
-              .discount_total ??
-            "0",
-
-          shippingTotal:
-            order
-              .shipping_total ??
-            "0",
+          error:
+            completionError instanceof Error
+              ? completionError.message
+              : completionError,
         },
-      },
+      );
+    }
+
+    return NextResponse.json(
+      successResponseBody,
 
       {
         status: 201,
 
-        headers: {
-          "Cache-Control":
-            "no-store",
-
-          "X-Content-Type-Options":
-            "nosniff",
-        },
+        headers:
+          getOrderResponseHeaders(),
       },
     );
   } catch (error) {
+    /*
+     * Reservation acquired হলেও WooCommerce
+     * request শুরু না হলে safe release।
+     */
+    if (
+      idempotencyReservation &&
+      !orderCreationStarted
+    ) {
+      try {
+        await releaseOrderIdempotency(
+          idempotencyReservation,
+        );
+      } catch (releaseError) {
+        console.error(
+          "Failed to release order idempotency reservation:",
+          releaseError,
+        );
+      }
+    }
+
+    if (
+      error instanceof
+      OrderIdempotencyError
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          error:
+            error.message,
+
+          code:
+            error.code,
+        },
+
+        {
+          status:
+            error.status,
+
+          headers:
+            getOrderResponseHeaders(),
+        },
+      );
+    }
+
     if (
       error instanceof
       SecureCheckoutError
@@ -2445,13 +2707,8 @@ export async function POST(
           status:
             error.status,
 
-          headers: {
-            "Cache-Control":
-              "no-store",
-
-            "X-Content-Type-Options":
-              "nosniff",
-          },
+          headers:
+            getOrderResponseHeaders(),
         },
       );
     }
@@ -2475,13 +2732,8 @@ export async function POST(
           status:
             error.status,
 
-          headers: {
-            "Cache-Control":
-              "no-store",
-
-            "X-Content-Type-Options":
-              "nosniff",
-          },
+          headers:
+            getOrderResponseHeaders(),
         },
       );
     }
@@ -2514,13 +2766,8 @@ export async function POST(
       {
         status: 502,
 
-        headers: {
-          "Cache-Control":
-            "no-store",
-
-          "X-Content-Type-Options":
-            "nosniff",
-        },
+        headers:
+          getOrderResponseHeaders(),
       },
     );
   }

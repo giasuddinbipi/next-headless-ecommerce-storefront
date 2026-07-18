@@ -6,11 +6,13 @@ import { useRouter } from "next/navigation";
 import {
   type FormEvent,
   useEffect,
-  useMemo,
+  useRef,
   useState,
 } from "react";
 
-import { useCartStore } from "@/store/cart-store";
+import {
+  useCartStore,
+} from "@/store/cart-store";
 
 export type CheckoutInitialValues = {
   firstName: string;
@@ -21,66 +23,71 @@ export type CheckoutInitialValues = {
   city: string;
   district: string;
   postcode: string;
-  shippingArea: "dhaka" | "outside";
+
+  shippingArea:
+    | "dhaka"
+    | "outside";
 };
 
 type CheckoutClientProps = {
-  initialValues: CheckoutInitialValues | null;
+  initialValues:
+    CheckoutInitialValues | null;
+
   hasSavedAddress: boolean;
 };
 
+type UnknownRecord =
+  Record<string, unknown>;
+
 type OrderResult = {
   success: true;
+
   orderId: number;
   orderNumber: string;
+
   status: string;
   currency: string;
   total: string;
-  emailSent: boolean;
 };
 
-type CouponDiscountType =
-  | "percent"
-  | "fixed_cart"
-  | "fixed_product";
-
-type AppliedCoupon = {
-  code: string;
-  discountType: CouponDiscountType;
-  amount: number;
-
-  subtotal: number;
-  eligibleSubtotal: number;
-  discount: number;
-  totalAfterDiscount: number;
-
-  freeShipping: boolean;
-  message: string;
+type OrderAttempt = {
+  key: string;
+  fingerprint: string;
 };
 
-type CouponValidationResult = {
-  success: true;
-  coupon: AppliedCoupon;
-};
+const ORDER_ATTEMPT_STORAGE_KEY =
+  "checkout-order-attempt-v1";
+
+/* =========================================================
+   General helpers
+========================================================= */
 
 function formatPrice(
-  value: number | string,
+  value:
+    | number
+    | string,
   currency = "BDT",
 ): string {
-  const price = Number(value);
+  const price =
+    Number(value);
 
-  return new Intl.NumberFormat("en-BD", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(
-    Number.isFinite(price) ? price : 0,
+  return new Intl.NumberFormat(
+    "en-BD",
+    {
+      style: "currency",
+      currency,
+      maximumFractionDigits: 0,
+    },
+  ).format(
+    Number.isFinite(price)
+      ? price
+      : 0,
   );
 }
 
 function isObject(
   value: unknown,
-): value is Record<string, unknown> {
+): value is UnknownRecord {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -93,12 +100,28 @@ function getErrorMessage(
 ): string {
   if (
     isObject(data) &&
-    typeof data.error === "string"
+    typeof data.error ===
+      "string" &&
+    data.error.trim()
   ) {
     return data.error;
   }
 
-  return "The request could not be completed.";
+  return "Order could not be created.";
+}
+
+function getErrorCode(
+  data: unknown,
+): string {
+  if (
+    isObject(data) &&
+    typeof data.code ===
+      "string"
+  ) {
+    return data.code;
+  }
+
+  return "";
 }
 
 function isOrderResult(
@@ -107,514 +130,685 @@ function isOrderResult(
   return (
     isObject(data) &&
     data.success === true &&
-    typeof data.orderId === "number" &&
-    typeof data.orderNumber === "string" &&
-    typeof data.status === "string" &&
-    typeof data.currency === "string" &&
-    typeof data.total === "string" &&
-    typeof data.emailSent === "boolean"
-  );
-}
-
-function isAppliedCoupon(
-  data: unknown,
-): data is AppliedCoupon {
-  return (
-    isObject(data) &&
-    typeof data.code === "string" &&
-    (
-      data.discountType === "percent" ||
-      data.discountType === "fixed_cart" ||
-      data.discountType === "fixed_product"
+    typeof data.orderId ===
+      "number" &&
+    Number.isInteger(
+      data.orderId,
     ) &&
-    typeof data.amount === "number" &&
-    typeof data.subtotal === "number" &&
-    typeof data.eligibleSubtotal ===
-      "number" &&
-    typeof data.discount === "number" &&
-    typeof data.totalAfterDiscount ===
-      "number" &&
-    typeof data.freeShipping ===
-      "boolean" &&
-    typeof data.message === "string"
+    data.orderId > 0 &&
+    typeof data.orderNumber ===
+      "string" &&
+    typeof data.status ===
+      "string" &&
+    typeof data.currency ===
+      "string" &&
+    typeof data.total ===
+      "string"
   );
 }
 
-function isCouponValidationResult(
-  data: unknown,
-): data is CouponValidationResult {
+/* =========================================================
+   Idempotency helpers
+========================================================= */
+
+function isOrderAttempt(
+  value: unknown,
+): value is OrderAttempt {
   return (
-    isObject(data) &&
-    data.success === true &&
-    isAppliedCoupon(data.coupon)
+    isObject(value) &&
+    typeof value.key ===
+      "string" &&
+    value.key.length >= 16 &&
+    value.key.length <= 200 &&
+    /^[A-Za-z0-9._:-]+$/.test(
+      value.key,
+    ) &&
+    typeof value.fingerprint ===
+      "string" &&
+    /^[a-f0-9]{64}$/.test(
+      value.fingerprint,
+    )
   );
 }
+
+function createIdempotencyKey():
+  string {
+  if (
+    typeof crypto ===
+    "undefined"
+  ) {
+    throw new Error(
+      "Secure checkout is not available in this browser.",
+    );
+  }
+
+  if (
+    typeof crypto.randomUUID ===
+    "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  if (
+    typeof crypto.getRandomValues !==
+    "function"
+  ) {
+    throw new Error(
+      "Secure checkout is not available in this browser.",
+    );
+  }
+
+  const randomBytes =
+    new Uint8Array(24);
+
+  crypto.getRandomValues(
+    randomBytes,
+  );
+
+  return Array.from(
+    randomBytes,
+  )
+    .map((byte) =>
+      byte
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("");
+}
+
+async function createPayloadFingerprint(
+  payload: string,
+): Promise<string> {
+  if (
+    typeof crypto ===
+      "undefined" ||
+    !crypto.subtle
+  ) {
+    throw new Error(
+      "Secure checkout fingerprinting is not available in this browser.",
+    );
+  }
+
+  const encodedPayload =
+    new TextEncoder().encode(
+      payload,
+    );
+
+  const digest =
+    await crypto.subtle.digest(
+      "SHA-256",
+      encodedPayload,
+    );
+
+  return Array.from(
+    new Uint8Array(
+      digest,
+    ),
+  )
+    .map((byte) =>
+      byte
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("");
+}
+
+function readStoredOrderAttempt():
+  OrderAttempt | null {
+  try {
+    const storedValue =
+      sessionStorage.getItem(
+        ORDER_ATTEMPT_STORAGE_KEY,
+      );
+
+    if (!storedValue) {
+      return null;
+    }
+
+    const parsedValue:
+      unknown =
+      JSON.parse(
+        storedValue,
+      );
+
+    if (
+      !isOrderAttempt(
+        parsedValue,
+      )
+    ) {
+      sessionStorage.removeItem(
+        ORDER_ATTEMPT_STORAGE_KEY,
+      );
+
+      return null;
+    }
+
+    return parsedValue;
+  } catch {
+    return null;
+  }
+}
+
+function storeOrderAttempt(
+  attempt: OrderAttempt,
+): void {
+  try {
+    sessionStorage.setItem(
+      ORDER_ATTEMPT_STORAGE_KEY,
+      JSON.stringify(
+        attempt,
+      ),
+    );
+  } catch {
+    /*
+     * sessionStorage unavailable হলেও
+     * component-এর in-memory ref কাজ করবে।
+     */
+  }
+}
+
+function removeStoredOrderAttempt():
+  void {
+  try {
+    sessionStorage.removeItem(
+      ORDER_ATTEMPT_STORAGE_KEY,
+    );
+  } catch {
+    /*
+     * Storage cleanup failure successful
+     * order response-কে ব্যর্থ করবে না।
+     */
+  }
+}
+
+/* =========================================================
+   Checkout component
+========================================================= */
 
 export default function CheckoutClient({
   initialValues,
   hasSavedAddress,
 }: CheckoutClientProps) {
-  const router = useRouter();
-  const [mounted, setMounted] =
-    useState(false);
-
-  const [shippingArea, setShippingArea] =
-    useState<"dhaka" | "outside">(
-      initialValues?.shippingArea ??
-        "dhaka",
-    );
-
-  const [email, setEmail] = useState(
-    initialValues?.email ?? "",
-  );
-
-  const [submitting, setSubmitting] =
-    useState(false);
-
-  const [errorMessage, setErrorMessage] =
-    useState("");
-
-  const [orderResult, setOrderResult] =
-    useState<OrderResult | null>(null);
-
-  const [couponCode, setCouponCode] =
-    useState("");
+  const router =
+    useRouter();
 
   const [
-    appliedCoupon,
-    setAppliedCoupon,
-  ] = useState<AppliedCoupon | null>(
-    null,
-  );
-
-  const [
-    applyingCoupon,
-    setApplyingCoupon,
+    mounted,
+    setMounted,
   ] = useState(false);
 
   const [
-    couponError,
-    setCouponError,
+    shippingArea,
+    setShippingArea,
+  ] = useState<
+    "dhaka" | "outside"
+  >(
+    initialValues
+      ?.shippingArea ??
+      "dhaka",
+  );
+
+  const [
+    submitting,
+    setSubmitting,
+  ] = useState(false);
+
+  const [
+    errorMessage,
+    setErrorMessage,
   ] = useState("");
 
-  const items = useCartStore(
-    (state) => state.items,
-  );
+  const [
+    orderResult,
+    setOrderResult,
+  ] =
+    useState<OrderResult | null>(
+      null,
+    );
 
-  const clearCart = useCartStore(
-    (state) => state.clearCart,
-  );
+  const orderAttemptRef =
+    useRef<OrderAttempt | null>(
+      null,
+    );
+
+  const items =
+    useCartStore(
+      (state) =>
+        state.items,
+    );
+
+  const clearCart =
+    useCartStore(
+      (state) =>
+        state.clearCart,
+    );
 
   useEffect(() => {
     setMounted(true);
+
+    /*
+     * Page reload বা uncertain network
+     * response-এর পরে একই attempt recover হবে।
+     */
+    orderAttemptRef.current =
+      readStoredOrderAttempt();
   }, []);
 
-  const cartSignature = useMemo(
-    () =>
-      items
-        .map(
-          (item) =>
-            [
-              item.cartKey,
-              item.productId,
-              item.variationId ?? 0,
-              item.quantity,
-              item.price,
-            ].join(":"),
-        )
-        .sort()
-        .join("|"),
-    [items],
-  );
+  const clearOrderAttempt =
+    (): void => {
+      orderAttemptRef.current =
+        null;
 
-  /*
-   * Cart পরিবর্তন হলে আগে apply করা coupon
-   * আবার validate করতে হবে।
-   */
-  useEffect(() => {
-    setAppliedCoupon(null);
-    setCouponError("");
-  }, [cartSignature]);
+      removeStoredOrderAttempt();
+    };
 
-  const subtotal = items.reduce(
-    (total, item) => {
-      const itemPrice = Number(
-        item.price || 0,
-      );
+  const subtotal =
+    items.reduce(
+      (
+        total,
+        item,
+      ) => {
+        const itemPrice =
+          Number(
+            item.price || 0,
+          );
 
-      return (
-        total +
-        (
-          Number.isFinite(itemPrice)
+        const safePrice =
+          Number.isFinite(
+            itemPrice,
+          )
             ? itemPrice
-            : 0
-        ) *
-          item.quantity
-      );
-    },
-    0,
-  );
+            : 0;
 
-  const standardDeliveryCharge =
-    shippingArea === "dhaka"
+        return (
+          total +
+          safePrice *
+            item.quantity
+        );
+      },
+      0,
+    );
+
+  const deliveryCharge =
+    shippingArea ===
+    "dhaka"
       ? 80
       : 150;
 
-  const couponDiscount = Math.min(
-    Math.max(
-      appliedCoupon?.discount ?? 0,
-      0,
-    ),
-    subtotal,
-  );
-
-  const deliveryCharge =
-    appliedCoupon?.freeShipping
-      ? 0
-      : standardDeliveryCharge;
-
-  const discountedSubtotal = Math.max(
-    0,
-    subtotal - couponDiscount,
-  );
-
   const estimatedTotal =
-    discountedSubtotal +
+    subtotal +
     deliveryCharge;
 
-  const handleEmailChange = (
-    value: string,
-  ) => {
-    setEmail(value);
+  const handleSubmit =
+    async (
+      event:
+        FormEvent<HTMLFormElement>,
+    ) => {
+      event.preventDefault();
 
-    /*
-     * Email-restricted coupon-এর ক্ষেত্রে
-     * email change হলে coupon পুনরায় apply করতে হবে।
-     */
-    if (appliedCoupon) {
-      setAppliedCoupon(null);
-
-      setCouponError(
-        "Billing email changed. Apply the coupon again.",
-      );
-    }
-  };
-
-  const handleApplyCoupon =
-    async () => {
-      const normalizedCode =
-        couponCode
-          .trim()
-          .toLowerCase();
-
-      setCouponError("");
-
-      if (!normalizedCode) {
-        setCouponError(
-          "Enter a coupon code.",
-        );
-
+      if (submitting) {
         return;
       }
 
-      if (items.length === 0) {
-        setCouponError(
+      if (
+        items.length === 0
+      ) {
+        setErrorMessage(
           "Your cart is empty.",
         );
 
         return;
       }
 
-      setApplyingCoupon(true);
+      setSubmitting(true);
+      setErrorMessage("");
+
+      const formData =
+        new FormData(
+          event.currentTarget,
+        );
+
+      const customer = {
+        firstName:
+          String(
+            formData.get(
+              "firstName",
+            ) ?? "",
+          ),
+
+        lastName:
+          String(
+            formData.get(
+              "lastName",
+            ) ?? "",
+          ),
+
+        phone:
+          String(
+            formData.get(
+              "phone",
+            ) ?? "",
+          ),
+
+        email:
+          String(
+            formData.get(
+              "email",
+            ) ?? "",
+          ),
+
+        address1:
+          String(
+            formData.get(
+              "address1",
+            ) ?? "",
+          ),
+
+        city:
+          String(
+            formData.get(
+              "city",
+            ) ?? "",
+          ),
+
+        district:
+          String(
+            formData.get(
+              "district",
+            ) ?? "",
+          ),
+
+        postcode:
+          String(
+            formData.get(
+              "postcode",
+            ) ?? "",
+          ),
+
+        note:
+          String(
+            formData.get(
+              "note",
+            ) ?? "",
+          ),
+      };
+
+      /*
+       * Browser product price, subtotal,
+       * shipping total বা final total পাঠাবে না।
+       *
+       * Server IDs, quantities এবং selected
+       * attributes দিয়ে fresh calculation করবে।
+       */
+      const requestBody = {
+        customer,
+
+        shippingArea,
+
+        website:
+          String(
+            formData.get(
+              "website",
+            ) ?? "",
+          ),
+
+        termsAccepted:
+          formData.get(
+            "termsAccepted",
+          ) === "on",
+
+        /*
+         * এই checkout form-এ coupon input
+         * না থাকায় empty code পাঠানো হচ্ছে।
+         *
+         * ভবিষ্যতে coupon state থাকলে এখানে
+         * সেই validated UI value বসানো যাবে।
+         */
+        couponCode: "",
+
+        items:
+          items.map(
+            (item) => ({
+              productId:
+                item.productId,
+
+              ...(item.variationId
+                ? {
+                    variationId:
+                      item.variationId,
+                  }
+                : {}),
+
+              quantity:
+                item.quantity,
+
+              attributes:
+                item.attributes.map(
+                  (
+                    attribute,
+                  ) => ({
+                    name:
+                      attribute.name,
+
+                    option:
+                      attribute.option,
+                  }),
+                ),
+            }),
+          ),
+      };
+
+      const requestPayload =
+        JSON.stringify(
+          requestBody,
+        );
 
       try {
-        const response = await fetch(
-          "/api/coupons/validate",
-          {
-            method: "POST",
+        const payloadFingerprint =
+          await createPayloadFingerprint(
+            requestPayload,
+          );
 
-            headers: {
-              "Content-Type":
-                "application/json",
+        let orderAttempt =
+          orderAttemptRef.current ??
+          readStoredOrderAttempt();
+
+        /*
+         * একই payload retry হলে একই key reuse হবে।
+         *
+         * Customer address, shipping area, cart,
+         * variation বা quantity পরিবর্তন করলে
+         * fingerprint বদলাবে এবং নতুন key হবে।
+         */
+        if (
+          !orderAttempt ||
+          orderAttempt.fingerprint !==
+            payloadFingerprint
+        ) {
+          orderAttempt = {
+            key:
+              createIdempotencyKey(),
+
+            fingerprint:
+              payloadFingerprint,
+          };
+
+          orderAttemptRef.current =
+            orderAttempt;
+
+          storeOrderAttempt(
+            orderAttempt,
+          );
+        } else {
+          orderAttemptRef.current =
+            orderAttempt;
+        }
+
+        const response =
+          await fetch(
+            "/api/orders",
+            {
+              method: "POST",
+
+              headers: {
+                Accept:
+                  "application/json",
+
+                "Content-Type":
+                  "application/json",
+
+                "Idempotency-Key":
+                  orderAttempt.key,
+              },
+
+              body:
+                requestPayload,
+
+              cache:
+                "no-store",
             },
-
-            body: JSON.stringify({
-              code: normalizedCode,
-
-              email:
-                email.trim() ||
-                undefined,
-
-              items: items.map(
-                (item) => ({
-                  productId:
-                    item.productId,
-
-                  variationId:
-                    item.variationId ??
-                    undefined,
-
-                  quantity:
-                    item.quantity,
-                }),
-              ),
-            }),
-          },
-        );
+          );
 
         const data: unknown =
           await response
             .json()
-            .catch(() => null);
+            .catch(
+              () => null,
+            );
+
+        const responseError =
+          getErrorMessage(
+            data,
+          );
+
+        const errorCode =
+          getErrorCode(
+            data,
+          );
 
         if (!response.ok) {
+          /*
+           * একই request এখনো process হলে key
+           * রাখা হবে। Retry একই key ব্যবহার করবে।
+           */
+          if (
+            errorCode ===
+            "order_request_in_progress"
+          ) {
+            throw new Error(
+              responseError,
+            );
+          }
+
+          /*
+           * একই key অন্য payload-এর সঙ্গে
+           * ব্যবহার হলে fresh attempt প্রয়োজন।
+           */
+          if (
+            errorCode ===
+            "idempotency_key_reused"
+          ) {
+            clearOrderAttempt();
+
+            throw new Error(
+              responseError,
+            );
+          }
+
+          /*
+           * Product, stock বা quantity বদলে গেলে
+           * order তৈরি হবে না। Customer cart-এ
+           * ফিরে fresh validation review করবে।
+           */
+          if (
+            response.status ===
+              409 &&
+            (
+              errorCode ===
+                "checkout_cart_changed" ||
+              errorCode ===
+                "checkout_cart_empty"
+            )
+          ) {
+            clearOrderAttempt();
+
+            try {
+              sessionStorage.setItem(
+                "checkout-conflict-message",
+                responseError,
+              );
+            } catch {
+              /*
+               * Storage unavailable হলেও
+               * redirect চলবে।
+               */
+            }
+
+            router.push(
+              "/cart?checkoutReview=required",
+            );
+
+            return;
+          }
+
+          /*
+           * নিশ্চিত client/validation failure হলে
+           * next submission fresh key পাবে।
+           *
+           * 5xx বা uncertain server response হলে
+           * key রাখা হবে, কারণ order তৈরি হয়ে
+           * response হারিয়ে যেতে পারে।
+           */
+          if (
+            response.status >=
+              400 &&
+            response.status <
+              500
+          ) {
+            clearOrderAttempt();
+          }
+
           throw new Error(
-            getErrorMessage(data),
+            responseError,
           );
         }
 
         if (
-          !isCouponValidationResult(
-            data,
-          )
+          !isOrderResult(data)
         ) {
+          /*
+           * HTTP success হলেও invalid response
+           * uncertain ধরা হবে। Key রাখা হবে,
+           * যাতে retry duplicate order না করে।
+           */
           throw new Error(
-            "The server returned an invalid coupon response.",
+            "The server returned an invalid order response.",
           );
         }
 
-        setAppliedCoupon(
-          data.coupon,
+        clearOrderAttempt();
+
+        setOrderResult(
+          data,
         );
 
-        setCouponCode(
-          data.coupon.code.toUpperCase(),
-        );
-
-        setCouponError("");
+        clearCart();
       } catch (error) {
-        setAppliedCoupon(null);
-
-        setCouponError(
+        /*
+         * Network failure বা unknown 5xx-এ
+         * order attempt clear করা হবে না।
+         *
+         * Retry একই key দিয়ে হবে।
+         */
+        setErrorMessage(
           error instanceof Error
             ? error.message
-            : "The coupon could not be applied.",
+            : "Order could not be created.",
         );
       } finally {
-        setApplyingCoupon(false);
+        setSubmitting(false);
       }
     };
-
-  const handleRemoveCoupon = () => {
-    setAppliedCoupon(null);
-    setCouponCode("");
-    setCouponError("");
-  };
-
-  const handleSubmit = async (
-    event: FormEvent<HTMLFormElement>,
-  ) => {
-    event.preventDefault();
-
-    if (items.length === 0) {
-      setErrorMessage(
-        "Your cart is empty.",
-      );
-
-      return;
-    }
-
-    setSubmitting(true);
-    setErrorMessage("");
-
-    const formData = new FormData(
-      event.currentTarget,
-    );
-
-    const customer = {
-      firstName: String(
-        formData.get("firstName") ??
-          "",
-      ),
-
-      lastName: String(
-        formData.get("lastName") ??
-          "",
-      ),
-
-      phone: String(
-        formData.get("phone") ?? "",
-      ),
-
-      email: String(
-        formData.get("email") ?? "",
-      ),
-
-      address1: String(
-        formData.get("address1") ??
-          "",
-      ),
-
-      city: String(
-        formData.get("city") ?? "",
-      ),
-
-      district: String(
-        formData.get("district") ??
-          "",
-      ),
-
-      postcode: String(
-        formData.get("postcode") ??
-          "",
-      ),
-
-      note: String(
-        formData.get("note") ?? "",
-      ),
-    };
-
-    try {
-      const response = await fetch(
-        "/api/orders",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            customer,
-            shippingArea,
-
-            /*
-             * Order API-তে code পাঠানো হচ্ছে।
-             * Backend অবশ্যই পুনরায় coupon validate করবে।
-             */
-            couponCode:
-              appliedCoupon?.code ??
-              "",
-
-            website: String(
-              formData.get("website") ??
-                "",
-            ),
-
-            termsAccepted:
-              formData.get(
-                "termsAccepted",
-              ) === "on",
-
-            items: items.map(
-  (item) => ({
-    productId:
-      item.productId,
-
-    ...(item.variationId
-      ? {
-          variationId:
-            item.variationId,
-        }
-      : {}),
-
-    quantity:
-      item.quantity,
-
-    attributes:
-      item.attributes.map(
-        (attribute) => ({
-          name:
-            attribute.name,
-
-          option:
-            attribute.option,
-        }),
-      ),
-  }),
-),
-          }),
-        },
-      );
-
-      const data: unknown =
-        await response
-          .json()
-          .catch(() => null);
-
-      if (!response.ok) {
-  const errorMessage =
-    getErrorMessage(data);
-
-  const errorCode =
-    isObject(data) &&
-    typeof data.code ===
-      "string"
-      ? data.code
-      : "";
-
-  /*
-   * Checkout submit করার আগে stock,
-   * availability বা quantity বদলে গেলে
-   * customer-কে cart page-এ ফেরত দেওয়া হবে।
-   *
-   * Cart page সেখানে fresh validation
-   * চালিয়ে পরিবর্তন দেখাবে।
-   */
-  if (
-    response.status === 409 &&
-    (
-      errorCode ===
-        "checkout_cart_changed" ||
-      errorCode ===
-        "checkout_cart_empty"
-    )
-  ) {
-    try {
-      sessionStorage.setItem(
-        "checkout-conflict-message",
-        errorMessage,
-      );
-    } catch {
-      // Storage unavailable হলেও redirect চলবে।
-    }
-
-    router.push(
-      "/cart?checkoutReview=required",
-    );
-
-    return;
-  }
-
-  throw new Error(
-    errorMessage,
-  );
-}
-
-      if (!isOrderResult(data)) {
-        throw new Error(
-          "The server returned an invalid order response.",
-        );
-      }
-
-      setOrderResult(data);
-
-      setAppliedCoupon(null);
-      setCouponCode("");
-      setCouponError("");
-
-      clearCart();
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Order could not be created.",
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   if (!mounted) {
     return (
@@ -636,27 +830,11 @@ export default function CheckoutClient({
             Order placed successfully
           </h1>
 
-            <p className="mt-3 text-gray-600">
-              Thank you. Your Cash on
-              Delivery order has been
-              submitted.
-            </p>
-
-            {orderResult.emailSent ? (
-              <div className="mt-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm leading-6 text-green-800">
-                A confirmation email containing
-                your order details has been sent
-                to your billing email address.
-              </div>
-            ) : (
-              <div className="mt-5 rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-sm leading-6 text-yellow-800">
-                Your order was placed
-                successfully, but the confirmation
-                email could not be sent. You can
-                still view the order from your
-                account.
-              </div>
-            )}
+          <p className="mt-3 text-gray-600">
+            Thank you. Your Cash on
+            Delivery order has been
+            submitted.
+          </p>
 
           <div className="mt-7 rounded-xl bg-gray-50 p-5 text-left">
             <div className="flex justify-between gap-4">
@@ -665,7 +843,10 @@ export default function CheckoutClient({
               </span>
 
               <span className="font-bold text-gray-900">
-                #{orderResult.orderNumber}
+                #
+                {
+                  orderResult.orderNumber
+                }
               </span>
             </div>
 
@@ -765,7 +946,9 @@ export default function CheckoutClient({
         )}
 
         <form
-          onSubmit={handleSubmit}
+          onSubmit={
+            handleSubmit
+          }
           className="mt-8 grid gap-8 lg:grid-cols-[1fr_380px]"
         >
           <div
@@ -804,7 +987,8 @@ export default function CheckoutClient({
                   id="firstName"
                   name="firstName"
                   defaultValue={
-                    initialValues?.firstName ??
+                    initialValues
+                      ?.firstName ??
                     ""
                   }
                   maxLength={60}
@@ -826,7 +1010,8 @@ export default function CheckoutClient({
                   id="lastName"
                   name="lastName"
                   defaultValue={
-                    initialValues?.lastName ??
+                    initialValues
+                      ?.lastName ??
                     ""
                   }
                   maxLength={60}
@@ -849,7 +1034,8 @@ export default function CheckoutClient({
                   type="tel"
                   name="phone"
                   defaultValue={
-                    initialValues?.phone ??
+                    initialValues
+                      ?.phone ??
                     ""
                   }
                   maxLength={30}
@@ -864,19 +1050,17 @@ export default function CheckoutClient({
                   htmlFor="email"
                   className="mb-2 block text-sm font-semibold text-gray-800"
                 >
-                  Email *
+                  Email
                 </label>
 
                 <input
-                  required
                   id="email"
                   type="email"
                   name="email"
-                  value={email}
-                  onChange={(event) =>
-                    handleEmailChange(
-                      event.target.value,
-                    )
+                  defaultValue={
+                    initialValues
+                      ?.email ??
+                    ""
                   }
                   maxLength={120}
                   autoComplete="email"
@@ -897,7 +1081,8 @@ export default function CheckoutClient({
                   id="address1"
                   name="address1"
                   defaultValue={
-                    initialValues?.address1 ??
+                    initialValues
+                      ?.address1 ??
                     ""
                   }
                   maxLength={300}
@@ -920,7 +1105,8 @@ export default function CheckoutClient({
                   id="city"
                   name="city"
                   defaultValue={
-                    initialValues?.city ??
+                    initialValues
+                      ?.city ??
                     ""
                   }
                   maxLength={80}
@@ -942,7 +1128,8 @@ export default function CheckoutClient({
                   id="district"
                   name="district"
                   defaultValue={
-                    initialValues?.district ??
+                    initialValues
+                      ?.district ??
                     ""
                   }
                   maxLength={80}
@@ -963,7 +1150,8 @@ export default function CheckoutClient({
                   id="postcode"
                   name="postcode"
                   defaultValue={
-                    initialValues?.postcode ??
+                    initialValues
+                      ?.postcode ??
                     ""
                   }
                   maxLength={20}
@@ -983,10 +1171,15 @@ export default function CheckoutClient({
                 <select
                   id="shippingArea"
                   name="shippingArea"
-                  value={shippingArea}
-                  onChange={(event) =>
+                  value={
+                    shippingArea
+                  }
+                  onChange={(
+                    event,
+                  ) =>
                     setShippingArea(
-                      event.target.value as
+                      event.target
+                        .value as
                         | "dhaka"
                         | "outside",
                     )
@@ -1029,189 +1222,80 @@ export default function CheckoutClient({
             </h2>
 
             <div className="mt-6 max-h-72 space-y-4 overflow-y-auto">
-              {items.map((item) => (
-                <div
-                  key={item.cartKey}
-                  className="flex justify-between gap-4 border-b border-gray-100 pb-4 text-sm"
-                >
-                  <div>
-                    <p className="font-semibold text-gray-900">
-                      {item.name}
-                    </p>
-
-                    {item.attributes.length >
-                      0 && (
-                      <p className="mt-1 text-gray-500">
-                        {item.attributes
-                          .map(
-                            (attribute) =>
-                              `${attribute.name}: ${attribute.option}`,
-                          )
-                          .join(" · ")}
-                      </p>
-                    )}
-
-                    <p className="mt-1 text-gray-500">
-                      Quantity:{" "}
-                      {item.quantity}
-                    </p>
-                  </div>
-
-                  <span className="font-semibold text-gray-900">
-                    {formatPrice(
-                      Number(item.price) *
-                        item.quantity,
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Coupon section */}
-            <div className="mt-6 border-t border-gray-200 pt-6">
-              <label
-                htmlFor="couponCode"
-                className="block text-sm font-semibold text-gray-800"
-              >
-                Coupon code
-              </label>
-
-              {!appliedCoupon ? (
-                <>
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      id="couponCode"
-                      type="text"
-                      value={couponCode}
-                      onChange={(event) => {
-                        setCouponCode(
-                          event.target.value,
-                        );
-
-                        setCouponError("");
-                      }}
-                      maxLength={100}
-                      autoComplete="off"
-                      placeholder="Enter coupon"
-                      className="h-12 min-w-0 flex-1 rounded-xl border border-gray-300 px-4 uppercase outline-none transition placeholder:normal-case focus:border-gray-900"
-                    />
-
-                    <button
-                      type="button"
-                      disabled={
-                        applyingCoupon ||
-                        submitting
-                      }
-                      onClick={() =>
-                        void handleApplyCoupon()
-                      }
-                      className="h-12 shrink-0 rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-gray-400"
-                    >
-                      {applyingCoupon
-                        ? "Applying..."
-                        : "Apply"}
-                    </button>
-                  </div>
-
-                  <p className="mt-2 text-xs leading-5 text-gray-500">
-                    The coupon will be
-                    checked against your
-                    cart and billing email.
-                  </p>
-                </>
-              ) : (
-                <div className="mt-3 rounded-xl border border-green-200 bg-green-50 p-4">
-                  <div className="flex items-start justify-between gap-4">
+              {items.map(
+                (item) => (
+                  <div
+                    key={
+                      item.cartKey
+                    }
+                    className="flex justify-between gap-4 border-b border-gray-100 pb-4 text-sm"
+                  >
                     <div>
-                      <p className="font-bold uppercase text-green-800">
-                        {appliedCoupon.code}
+                      <p className="font-semibold text-gray-900">
+                        {item.name}
                       </p>
 
-                      <p className="mt-1 text-sm leading-6 text-green-700">
+                      {item.attributes
+                        .length >
+                        0 && (
+                        <p className="mt-1 text-gray-500">
+                          {item.attributes
+                            .map(
+                              (
+                                attribute,
+                              ) =>
+                                `${attribute.name}: ${attribute.option}`,
+                            )
+                            .join(
+                              " · ",
+                            )}
+                        </p>
+                      )}
+
+                      <p className="mt-1 text-gray-500">
+                        Quantity:{" "}
                         {
-                          appliedCoupon.message
+                          item.quantity
                         }
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={
-                        handleRemoveCoupon
-                      }
-                      className="shrink-0 text-sm font-semibold text-red-600 underline underline-offset-4"
-                    >
-                      Remove
-                    </button>
+                    <span className="font-semibold text-gray-900">
+                      {formatPrice(
+                        Number(
+                          item.price,
+                        ) *
+                          item.quantity,
+                      )}
+                    </span>
                   </div>
-                </div>
-              )}
-
-              {couponError && (
-                <div
-                  role="alert"
-                  className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-700"
-                >
-                  {couponError}
-                </div>
+                ),
               )}
             </div>
 
             <div className="mt-6 space-y-4 text-sm">
               <div className="flex justify-between text-gray-600">
-                <span>Subtotal</span>
+                <span>
+                  Subtotal
+                </span>
 
                 <span>
-                  {formatPrice(subtotal)}
+                  {formatPrice(
+                    subtotal,
+                  )}
                 </span>
               </div>
 
-              {appliedCoupon &&
-                couponDiscount > 0 && (
-                  <div className="flex justify-between gap-4 text-green-700">
-                    <span>
-                      Coupon discount
-                      <span className="ml-1 font-semibold uppercase">
-                        (
-                        {
-                          appliedCoupon.code
-                        }
-                        )
-                      </span>
-                    </span>
-
-                    <span className="font-semibold">
-                      −
-                      {formatPrice(
-                        couponDiscount,
-                      )}
-                    </span>
-                  </div>
-                )}
-
               <div className="flex justify-between text-gray-600">
-                <span>Delivery</span>
+                <span>
+                  Delivery
+                </span>
 
-                {appliedCoupon
-                  ?.freeShipping ? (
-                  <div className="text-right">
-                    <span className="font-semibold text-green-700">
-                      Free
-                    </span>
-
-                    <span className="ml-2 text-xs text-gray-400 line-through">
-                      {formatPrice(
-                        standardDeliveryCharge,
-                      )}
-                    </span>
-                  </div>
-                ) : (
-                  <span>
-                    {formatPrice(
-                      deliveryCharge,
-                    )}
-                  </span>
-                )}
+                <span>
+                  {formatPrice(
+                    deliveryCharge,
+                  )}
+                </span>
               </div>
 
               <div className="flex justify-between border-t border-gray-200 pt-5 text-lg font-bold text-gray-900">
@@ -1227,14 +1311,13 @@ export default function CheckoutClient({
               </div>
             </div>
 
-            {appliedCoupon && (
-              <p className="mt-3 text-xs leading-5 text-gray-500">
-                Coupon eligibility and the
-                final total will be checked
-                again securely when the
-                order is placed.
-              </p>
-            )}
+            <p className="mt-3 text-xs leading-5 text-gray-500">
+              Product prices, stock,
+              discount and final payable
+              total will be verified by
+              the server before the order
+              is created.
+            </p>
 
             <div className="mt-5 rounded-lg bg-yellow-50 p-4 text-sm text-yellow-800">
               Payment method: Cash on
@@ -1255,6 +1338,9 @@ export default function CheckoutClient({
                 required
                 type="checkbox"
                 name="termsAccepted"
+                disabled={
+                  submitting
+                }
                 className="mt-1 h-4 w-4 rounded border-gray-300"
               />
 
@@ -1269,8 +1355,10 @@ export default function CheckoutClient({
             <button
               type="submit"
               disabled={
-                submitting ||
-                applyingCoupon
+                submitting
+              }
+              aria-busy={
+                submitting
               }
               className="mt-6 w-full rounded-xl bg-gray-900 px-5 py-4 font-semibold text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
@@ -1281,6 +1369,18 @@ export default function CheckoutClient({
 
             <Link
               href="/cart"
+              aria-disabled={
+                submitting
+              }
+              onClick={(
+                event,
+              ) => {
+                if (
+                  submitting
+                ) {
+                  event.preventDefault();
+                }
+              }}
               className="mt-4 block text-center text-sm font-semibold text-gray-700 transition hover:text-gray-950"
             >
               Return to cart
@@ -1288,6 +1388,18 @@ export default function CheckoutClient({
 
             <Link
               href="/account/addresses"
+              aria-disabled={
+                submitting
+              }
+              onClick={(
+                event,
+              ) => {
+                if (
+                  submitting
+                ) {
+                  event.preventDefault();
+                }
+              }}
               className="mt-3 block text-center text-sm font-semibold text-blue-700 transition hover:text-blue-900"
             >
               Manage saved addresses
