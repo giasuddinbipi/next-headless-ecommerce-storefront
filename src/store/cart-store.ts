@@ -51,6 +51,10 @@ type CartState = {
     products: CartItem[],
   ) => void;
 
+  replaceItems: (
+    products: CartItem[],
+  ) => void;
+
   increaseQuantity: (
     cartKey: string,
   ) => void;
@@ -612,6 +616,93 @@ export const useCartStore =
           });
         },
 
+        replaceItems: (
+  products,
+) => {
+  set(() => {
+    const validatedItems =
+      new Map<
+        string,
+        CartItem
+      >();
+
+    for (
+      const product of
+      products
+    ) {
+      if (
+        !isValidCartProduct(
+          product,
+        )
+      ) {
+        continue;
+      }
+
+      const normalizedProduct =
+        normalizeCartProduct(
+          product,
+        );
+
+      const identityKey =
+        getCartIdentityKey(
+          normalizedProduct,
+        );
+
+      const safeQuantity =
+        normalizeQuantity(
+          product.quantity,
+        );
+
+      const existingItem =
+        validatedItems.get(
+          identityKey,
+        );
+
+      if (existingItem) {
+        validatedItems.set(
+          identityKey,
+          {
+            ...existingItem,
+            ...normalizedProduct,
+
+            /*
+             * প্রথম validated item-এর cartKey
+             * রাখা হবে, যাতে duplicate identity
+             * একটিমাত্র cart line হয়।
+             */
+            cartKey:
+              existingItem.cartKey,
+
+            quantity:
+              mergeQuantity(
+                existingItem.quantity,
+                safeQuantity,
+              ),
+          },
+        );
+
+        continue;
+      }
+
+      validatedItems.set(
+        identityKey,
+        {
+          ...normalizedProduct,
+
+          quantity:
+            safeQuantity,
+        },
+      );
+    }
+
+    return {
+      items:
+        Array.from(
+          validatedItems.values(),
+        ),
+    };
+  });
+},
         increaseQuantity: (
           cartKey,
         ) => {
