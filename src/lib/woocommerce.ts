@@ -70,6 +70,9 @@ export type WooCommerceProduct = {
 
   purchasable: boolean;
 
+  average_rating: string;
+  rating_count: number;
+
   stock_status:
     | "instock"
     | "outofstock"

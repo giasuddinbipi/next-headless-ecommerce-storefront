@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import Image from "next/image";
 import Link from "next/link";
+import ProductReviews from "@/components/products/ProductReviews";
 
 import { notFound } from "next/navigation";
 
@@ -215,6 +216,19 @@ export default async function ProductPage({
             </p>
           </section>
         </div>
+
+        <ProductReviews
+        productId={product.id}
+        productSlug={product.slug}
+        averageRating={
+         Number(
+         product.average_rating || 0,
+        )
+       }
+          ratingCount={
+          product.rating_count || 0
+        }
+        />
       </div>
     </main>
   );
