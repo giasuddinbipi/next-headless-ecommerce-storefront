@@ -6,6 +6,12 @@ import {
   redirect,
 } from "next/navigation";
 
+import CancelOrderButton from "@/components/account/CancelOrderButton";
+
+import {
+  canCustomerCancelOrder,
+} from "@/lib/order-cancellation";
+
 import { auth } from "@/auth";
 
 import OrderPaymentSummary from "@/components/account/OrderPaymentSummary";
@@ -364,6 +370,12 @@ export default async function OrderDetailsPage({
   if (!order) {
     notFound();
   }
+
+  const canCancelOrder =
+  canCustomerCancelOrder(
+    order.status,
+  ) &&
+  !order.date_paid;
 
   const orderDate =
     formatDate(order.date_created);
@@ -773,6 +785,16 @@ export default async function OrderDetailsPage({
           >
             Continue shopping
           </Link>
+          
+          {canCancelOrder && (
+            <CancelOrderButton
+              orderId={order.id}
+              orderNumber={
+                order.number
+              }
+            />
+        )}
+
         </div>
       </div>
     </main>
