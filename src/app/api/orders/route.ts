@@ -6,6 +6,16 @@ import {
 import { auth } from "@/auth";
 
 import {
+  getCustomerProfile,
+} from "@/lib/customer";
+
+import {
+  CouponValidationError,
+  validateCouponForCart,
+  type ValidatedCouponResult,
+} from "@/lib/coupons";
+
+import {
   createWooCommerceOrder,
   getProductById,
   getProductVariations,
@@ -32,6 +42,10 @@ const MAX_CUSTOMER_NOTE_LENGTH = 1_000;
 type UnknownRecord =
   Record<string, unknown>;
 
+type ShippingArea =
+  | "dhaka"
+  | "outside";
+
 type CartAttribute = {
   name: string;
   option: string;
@@ -47,13 +61,19 @@ type NormalizedCartItem = {
 type NormalizedOrderRequest = {
   billing: WooCommerceOrderAddress;
   shipping: WooCommerceOrderAddress;
+
+  shippingArea: ShippingArea;
+
   items: NormalizedCartItem[];
+
   customerNote: string;
+  couponCode: string;
 };
 
 type PurchasableItemSnapshot = {
   name?: string;
   price: string;
+
   purchasable: boolean;
 
   stock_status:
@@ -85,7 +105,9 @@ class OrderRequestError extends Error {
   ) {
     super(message);
 
-    this.name = "OrderRequestError";
+    this.name =
+      "OrderRequestError";
+
     this.status = status;
     this.code = code;
   }
@@ -256,6 +278,15 @@ function normalizeWhitespace(
     .trim();
 }
 
+function normalizeCouponCode(
+  value: string,
+): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .slice(0, 100);
+}
+
 function normalizeCountry(
   value: string,
 ): string {
@@ -320,17 +351,18 @@ function addAllowedOrigin(
   }
 
   try {
-    const url = normalized.includes(
-      "://",
-    )
-      ? new URL(normalized)
-      : new URL(
-          `https://${normalized}`,
-        );
+    const url =
+      normalized.includes(
+        "://",
+      )
+        ? new URL(normalized)
+        : new URL(
+            `https://${normalized}`,
+          );
 
     origins.add(url.origin);
   } catch {
-    // Invalid environment URL is ignored.
+    // Invalid environment URL ignored.
   }
 }
 
@@ -352,7 +384,9 @@ function isSameOrigin(
       new URL(request.url).origin;
 
     submittedOrigin =
-      new URL(originHeader).origin;
+      new URL(
+        originHeader,
+      ).origin;
   } catch {
     return false;
   }
@@ -376,7 +410,8 @@ function isSameOrigin(
 
   addAllowedOrigin(
     allowedOrigins,
-    process.env.NEXT_PUBLIC_SITE_URL,
+    process.env
+      .NEXT_PUBLIC_SITE_URL,
   );
 
   addAllowedOrigin(
@@ -425,7 +460,9 @@ async function parseRequestBody(
     );
 
   if (
-    Number.isFinite(contentLength) &&
+    Number.isFinite(
+      contentLength,
+    ) &&
     contentLength >
       MAX_REQUEST_BODY_SIZE
   ) {
@@ -548,7 +585,7 @@ function normalizeAddress(
           [
             "city",
             "town",
-            "district",
+            "upazila",
           ],
           fallback?.city,
         ),
@@ -561,6 +598,7 @@ function normalizeAddress(
           [
             "state",
             "division",
+            "district",
             "region",
           ],
           fallback?.state,
@@ -668,7 +706,15 @@ function validateAddress(
 
   if (!address.city) {
     throw new OrderRequestError(
-      `${label} city or district is required.`,
+      `${label} city or upazila is required.`,
+      400,
+      "invalid_address",
+    );
+  }
+
+  if (!address.state) {
+    throw new OrderRequestError(
+      `${label} district is required.`,
       400,
       "invalid_address",
     );
@@ -707,13 +753,13 @@ function validateAddress(
   validateTextLength(
     address.address_1,
     `${label} address`,
-    250,
+    300,
   );
 
   validateTextLength(
     address.address_2 ?? "",
     `${label} secondary address`,
-    250,
+    300,
   );
 
   validateTextLength(
@@ -724,7 +770,7 @@ function validateAddress(
 
   validateTextLength(
     address.state,
-    `${label} state`,
+    `${label} district`,
     100,
   );
 
@@ -854,12 +900,16 @@ function normalizeCartAttributes(
       }
 
       attributes.push({
-        name: name.slice(0, 150),
+        name:
+          name.slice(0, 150),
+
         option:
           option.slice(0, 250),
       });
     }
-  } else if (isObject(value)) {
+  } else if (
+    isObject(value)
+  ) {
     for (
       const [
         nameValue,
@@ -886,7 +936,9 @@ function normalizeCartAttributes(
         option
       ) {
         attributes.push({
-          name: name.slice(0, 150),
+          name:
+            name.slice(0, 150),
+
           option:
             option.slice(0, 250),
         });
@@ -895,7 +947,10 @@ function normalizeCartAttributes(
   }
 
   const uniqueAttributes =
-    new Map<string, CartAttribute>();
+    new Map<
+      string,
+      CartAttribute
+    >();
 
   for (
     const attribute of attributes
@@ -1012,9 +1067,14 @@ function normalizeCartItem(
     );
 
   return {
-    productId: productIdValue,
+    productId:
+      productIdValue,
+
     variationId,
-    quantity: quantityValue,
+
+    quantity:
+      quantityValue,
+
     attributes:
       normalizeCartAttributes(
         rawAttributes,
@@ -1077,6 +1137,7 @@ function mergeDuplicateCartItems(
         key,
         {
           ...item,
+
           attributes:
             [...item.attributes],
         },
@@ -1113,6 +1174,17 @@ function mergeDuplicateCartItems(
    Full order request normalization
 ========================================================= */
 
+function normalizeShippingArea(
+  value: string,
+): ShippingArea {
+  return value
+    .trim()
+    .toLowerCase() ===
+    "outside"
+    ? "outside"
+    : "dhaka";
+}
+
 function normalizeOrderRequest(
   value: unknown,
 ): NormalizedOrderRequest {
@@ -1127,9 +1199,44 @@ function normalizeOrderRequest(
     );
   }
 
+  const website =
+    readString(
+      body,
+      ["website"],
+    );
+
+  if (website) {
+    throw new OrderRequestError(
+      "The order request was rejected.",
+      400,
+      "invalid_request",
+    );
+  }
+
+  const termsAccepted =
+    readBoolean(
+      body,
+      [
+        "termsAccepted",
+        "terms_accepted",
+      ],
+    );
+
+  if (termsAccepted !== true) {
+    throw new OrderRequestError(
+      "You must agree to the store terms before placing the order.",
+      400,
+      "terms_not_accepted",
+    );
+  }
+
   const billingSource =
-    getRecord(body.billing) ??
-    getRecord(body.customer) ??
+    getRecord(
+      body.billing,
+    ) ??
+    getRecord(
+      body.customer,
+    ) ??
     body;
 
   const billing =
@@ -1138,7 +1245,9 @@ function normalizeOrderRequest(
     );
 
   const shippingSource =
-    getRecord(body.shipping);
+    getRecord(
+      body.shipping,
+    );
 
   const sameAsBilling =
     readBoolean(
@@ -1176,6 +1285,18 @@ function normalizeOrderRequest(
           ...billing,
         };
 
+  const shippingArea =
+    normalizeShippingArea(
+      readString(
+        body,
+        [
+          "shippingArea",
+          "shipping_area",
+        ],
+        "dhaka",
+      ),
+    );
+
   const rawItems =
     getFirstDefinedValue(
       body,
@@ -1187,7 +1308,11 @@ function normalizeOrderRequest(
       ],
     );
 
-  if (!Array.isArray(rawItems)) {
+  if (
+    !Array.isArray(
+      rawItems,
+    )
+  ) {
     throw new OrderRequestError(
       "The cart items are missing.",
       400,
@@ -1223,7 +1348,8 @@ function normalizeOrderRequest(
 
   if (
     normalizedItems.some(
-      (item) => item === null,
+      (item) =>
+        item === null,
     )
   ) {
     throw new OrderRequestError(
@@ -1246,7 +1372,8 @@ function normalizeOrderRequest(
   const totalQuantity =
     items.reduce(
       (total, item) =>
-        total + item.quantity,
+        total +
+        item.quantity,
       0,
     );
 
@@ -1264,14 +1391,25 @@ function normalizeOrderRequest(
   const customerNote =
     normalizeWhitespace(
       readString(
-        body,
+        billingSource,
         [
+          "note",
           "customerNote",
           "customer_note",
           "orderNotes",
           "order_notes",
           "notes",
         ],
+        readString(
+          body,
+          [
+            "customerNote",
+            "customer_note",
+            "orderNotes",
+            "order_notes",
+            "notes",
+          ],
+        ),
       ),
     );
 
@@ -1286,6 +1424,18 @@ function normalizeOrderRequest(
     );
   }
 
+  const couponCode =
+    normalizeCouponCode(
+      readString(
+        body,
+        [
+          "couponCode",
+          "coupon_code",
+          "coupon",
+        ],
+      ),
+    );
+
   validateAddress(
     billing,
     "billing",
@@ -1299,8 +1449,10 @@ function normalizeOrderRequest(
   return {
     billing,
     shipping,
+    shippingArea,
     items,
     customerNote,
+    couponCode,
   };
 }
 
@@ -1338,15 +1490,12 @@ function validatePurchasableItem(
     return `${productName} is out of stock.`;
   }
 
-  /*
-   * onbackorder items may have zero physical
-   * quantity but can still be ordered.
-   */
   if (
     item.manage_stock &&
     item.stock_status !==
       "onbackorder" &&
-    item.stock_quantity !== null &&
+    item.stock_quantity !==
+      null &&
     requestedQuantity >
       item.stock_quantity
   ) {
@@ -1361,7 +1510,9 @@ function findRequestedAttribute(
   name: string,
 ): CartAttribute | undefined {
   const normalizedName =
-    normalizeAttributeName(name);
+    normalizeAttributeName(
+      name,
+    );
 
   return attributes.find(
     (attribute) =>
@@ -1380,10 +1531,6 @@ function validateVariationAttributes(
     const variationAttribute of
     variation.attributes
   ) {
-    /*
-     * Empty variation option means WooCommerce
-     * accepts any value for this attribute.
-     */
     if (
       !variationAttribute.option
         .trim()
@@ -1397,11 +1544,6 @@ function validateVariationAttributes(
         variationAttribute.name,
       );
 
-    /*
-     * The variation ID remains authoritative.
-     * When the client also sends attributes,
-     * they must agree with that variation.
-     */
     if (
       requestedAttribute &&
       normalizeAttributeOption(
@@ -1437,10 +1579,6 @@ function getWildcardVariationMetadata(
     const variationAttribute of
     variation.attributes
   ) {
-    /*
-     * Non-empty attributes are already attached
-     * to the WooCommerce variation itself.
-     */
     if (
       variationAttribute.option
         .trim()
@@ -1490,7 +1628,9 @@ function validateProductAvailability(
     ![
       "simple",
       "variable",
-    ].includes(product.type)
+    ].includes(
+      product.type,
+    )
   ) {
     throw new OrderRequestError(
       `${product.name} cannot be ordered through this checkout.`,
@@ -1523,7 +1663,8 @@ async function buildValidatedOrderLines(
     ValidatedOrderLine[] = [];
 
   for (
-    const cartItem of cartItems
+    const cartItem of
+    cartItems
   ) {
     let product =
       productCache.get(
@@ -1617,37 +1758,40 @@ async function buildValidatedOrderLines(
 
       const effectiveManageStock =
         variationUsesOwnStock ||
-        (variationUsesParentStock &&
+        (
+          variationUsesParentStock &&
           product.manage_stock ===
-            true);
+            true
+        );
 
       const effectiveStockQuantity =
         variationUsesOwnStock
-          ? variation.stock_quantity ??
+          ? variation
+              .stock_quantity ??
             null
           : variationUsesParentStock
-            ? product.stock_quantity ??
+            ? product
+                .stock_quantity ??
               null
             : null;
 
       const validationError =
         validatePurchasableItem(
           {
-            name: product.name,
+            name:
+              product.name,
 
             price:
               variation.price,
 
-            /*
-             * Exact fix for the previous
-             * TypeScript build error.
-             */
             purchasable:
-              variation.purchasable ??
+              variation
+                .purchasable ??
               false,
 
             stock_status:
-              variation.stock_status,
+              variation
+                .stock_status,
 
             manage_stock:
               effectiveManageStock,
@@ -1708,26 +1852,29 @@ async function buildValidatedOrderLines(
     const validationError =
       validatePurchasableItem(
         {
-          name: product.name,
-          price: product.price,
+          name:
+            product.name,
 
-          /*
-           * These fallback values fix the
-           * optional-property TypeScript error.
-           */
+          price:
+            product.price,
+
           purchasable:
-            product.purchasable ??
+            product
+              .purchasable ??
             false,
 
           stock_status:
-            product.stock_status,
+            product
+              .stock_status,
 
           manage_stock:
-            product.manage_stock ??
+            product
+              .manage_stock ??
             false,
 
           stock_quantity:
-            product.stock_quantity ??
+            product
+              .stock_quantity ??
             null,
         },
 
@@ -1755,31 +1902,159 @@ async function buildValidatedOrderLines(
 }
 
 /* =========================================================
+   Coupon validation
+========================================================= */
+
+async function validateOrderCoupon({
+  couponCode,
+  billingEmail,
+  customerId,
+  sessionEmail,
+  items,
+}: {
+  couponCode: string;
+  billingEmail?: string;
+  customerId: number;
+  sessionEmail?: string | null;
+  items: NormalizedCartItem[];
+}): Promise<ValidatedCouponResult | null> {
+  if (!couponCode) {
+    return null;
+  }
+
+  let trustedEmail =
+    billingEmail
+      ?.trim()
+      .toLowerCase() || "";
+
+  /*
+   * Logged-in customers use the email stored
+   * in the WooCommerce customer account.
+   */
+  if (customerId > 0) {
+    try {
+      const customer =
+        await getCustomerProfile(
+          customerId,
+        );
+
+      if (
+        customer?.email
+      ) {
+        trustedEmail =
+          customer.email
+            .trim()
+            .toLowerCase();
+      }
+    } catch (error) {
+      console.error(
+        "Order coupon customer lookup failed:",
+        error,
+      );
+
+      if (
+        typeof sessionEmail ===
+          "string" &&
+        sessionEmail.trim()
+      ) {
+        trustedEmail =
+          sessionEmail
+            .trim()
+            .toLowerCase();
+      }
+    }
+  }
+
+  try {
+    return await validateCouponForCart({
+      code:
+        couponCode,
+
+      email:
+        trustedEmail ||
+        undefined,
+
+      customerId:
+        customerId > 0
+          ? customerId
+          : undefined,
+
+      items:
+        items.map(
+          (item) => ({
+            productId:
+              item.productId,
+
+            variationId:
+              item.variationId,
+
+            quantity:
+              item.quantity,
+          }),
+        ),
+    });
+  } catch (error) {
+    if (
+      error instanceof
+      CouponValidationError
+    ) {
+      throw new OrderRequestError(
+        error.message,
+        error.status,
+        error.code,
+      );
+    }
+
+    throw error;
+  }
+}
+
+/* =========================================================
    Shipping configuration
 ========================================================= */
 
-function getShippingConfiguration(): {
+function parseShippingFee(
+  value: string | undefined,
+  fallback: number,
+): number {
+  const parsed =
+    Number(value);
+
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < 0
+  ) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function getShippingConfiguration(
+  shippingArea: ShippingArea,
+): {
   methodId: string;
   methodTitle: string;
   total: string;
 } {
-  const rawShippingFee =
+  const legacyShippingFee =
     process.env
-      .STORE_SHIPPING_FEE ??
-    process.env
-      .WOOCOMMERCE_SHIPPING_FEE ??
-    "0";
-
-  const parsedShippingFee =
-    Number(rawShippingFee);
+      .STORE_SHIPPING_FEE;
 
   const shippingFee =
-    Number.isFinite(
-      parsedShippingFee,
-    ) &&
-    parsedShippingFee >= 0
-      ? parsedShippingFee
-      : 0;
+    shippingArea === "dhaka"
+      ? parseShippingFee(
+          process.env
+            .STORE_SHIPPING_FEE_DHAKA ??
+            legacyShippingFee,
+          80,
+        )
+      : parseShippingFee(
+          process.env
+            .STORE_SHIPPING_FEE_OUTSIDE ??
+            legacyShippingFee,
+          150,
+        );
 
   const methodId =
     process.env
@@ -1787,19 +2062,24 @@ function getShippingConfiguration(): {
       ?.trim() ||
     "flat_rate";
 
+  const defaultTitle =
+    shippingArea === "dhaka"
+      ? "Inside Dhaka delivery"
+      : "Outside Dhaka delivery";
+
   const methodTitle =
     process.env
       .STORE_SHIPPING_METHOD_TITLE
       ?.trim() ||
-    (shippingFee > 0
-      ? "Standard delivery"
-      : "Free delivery");
+    defaultTitle;
 
   return {
     methodId,
     methodTitle,
     total:
-      formatMoney(shippingFee),
+      formatMoney(
+        shippingFee,
+      ),
   };
 }
 
@@ -1832,10 +2112,9 @@ export async function POST(
       );
 
     /*
-     * Product names, prices, stock status and
-     * purchasable values are loaded again from
-     * WooCommerce. Client-side price values are
-     * never trusted.
+     * Product names, prices, stock and
+     * availability are loaded from WooCommerce.
+     * Browser prices are not trusted.
      */
     const validatedLines =
       await buildValidatedOrderLines(
@@ -1869,8 +2148,95 @@ export async function POST(
         ? sessionCustomerId
         : 0;
 
+    /*
+     * Coupon is checked again during order
+     * creation. The checkout UI result is not trusted.
+     */
+    const validatedCoupon =
+      await validateOrderCoupon({
+        couponCode:
+          normalizedRequest
+            .couponCode,
+
+        billingEmail:
+          normalizedRequest
+            .billing.email,
+
+        customerId,
+
+        sessionEmail:
+          session?.user?.email,
+
+        items:
+          normalizedRequest.items,
+      });
+
     const shipping =
-      getShippingConfiguration();
+      getShippingConfiguration(
+        normalizedRequest
+          .shippingArea,
+      );
+
+    /*
+     * Billing email and phone should not be copied
+     * into the WooCommerce shipping object.
+     */
+    const {
+      email: _shippingEmail,
+      phone: _shippingPhone,
+      ...safeShippingAddress
+    } = normalizedRequest.shipping;
+
+    const orderMetaData:
+      NonNullable<
+        CreateOrderInput["meta_data"]
+      > = [
+      {
+        key:
+          "_headless_storefront_order",
+
+        value: "yes",
+      },
+
+      {
+        key:
+          "_headless_order_source",
+
+        value:
+          "nextjs-storefront",
+      },
+
+      {
+        key:
+          "_headless_shipping_area",
+
+        value:
+          normalizedRequest
+            .shippingArea,
+      },
+
+      ...(validatedCoupon
+        ? [
+            {
+              key:
+                "_headless_coupon_code",
+
+              value:
+                validatedCoupon.code,
+            },
+
+            {
+              key:
+                "_headless_coupon_validated_discount",
+
+              value:
+                validatedCoupon
+                  .discount
+                  .toFixed(2),
+            },
+          ]
+        : []),
+    ];
 
     const orderInput:
       CreateOrderInput = {
@@ -1881,7 +2247,8 @@ export async function POST(
           }
         : {}),
 
-      payment_method: "cod",
+      payment_method:
+        "cod",
 
       payment_method_title:
         "Cash on delivery",
@@ -1889,10 +2256,11 @@ export async function POST(
       set_paid: false,
 
       billing:
-        normalizedRequest.billing,
+        normalizedRequest
+          .billing,
 
       shipping:
-        normalizedRequest.shipping,
+        safeShippingAddress,
 
       line_items:
         validatedLines,
@@ -1903,33 +2271,38 @@ export async function POST(
             shipping.methodId,
 
           method_title:
-            shipping.methodTitle,
+            validatedCoupon
+              ?.freeShipping
+              ? "Free delivery"
+              : shipping
+                  .methodTitle,
 
           total:
-            shipping.total,
+            validatedCoupon
+              ?.freeShipping
+              ? "0.00"
+              : shipping.total,
         },
       ],
+
+      ...(validatedCoupon
+        ? {
+            coupon_lines: [
+              {
+                code:
+                  validatedCoupon
+                    .code,
+              },
+            ],
+          }
+        : {}),
 
       customer_note:
         normalizedRequest
           .customerNote,
 
-      meta_data: [
-        {
-          key:
-            "_headless_storefront_order",
-
-          value: "yes",
-        },
-
-        {
-          key:
-            "_headless_order_source",
-
-          value:
-            "nextjs-storefront",
-        },
-      ],
+      meta_data:
+        orderMetaData,
     };
 
     const order =
@@ -1959,16 +2332,59 @@ export async function POST(
         currency:
           order.currency,
 
+        discountTotal:
+          order.discount_total ??
+          "0",
+
+        shippingTotal:
+          order.shipping_total ??
+          "0",
+
+        coupon:
+          validatedCoupon
+            ? {
+                code:
+                  validatedCoupon
+                    .code,
+
+                discount:
+                  order
+                    .discount_total ??
+                  validatedCoupon
+                    .discount
+                    .toFixed(2),
+
+                freeShipping:
+                  validatedCoupon
+                    .freeShipping,
+              }
+            : null,
+
         order: {
-          id: order.id,
+          id:
+            order.id,
+
           number:
             order.number,
+
           status:
             order.status,
+
           total:
             order.total,
+
           currency:
             order.currency,
+
+          discountTotal:
+            order
+              .discount_total ??
+            "0",
+
+          shippingTotal:
+            order
+              .shipping_total ??
+            "0",
         },
       },
 
@@ -1989,12 +2405,15 @@ export async function POST(
       return NextResponse.json(
         {
           success: false,
-          error: error.message,
-          code: error.code,
+          error:
+            error.message,
+          code:
+            error.code,
         },
 
         {
-          status: error.status,
+          status:
+            error.status,
 
           headers: {
             "Cache-Control":
@@ -2004,8 +2423,14 @@ export async function POST(
       );
     }
 
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : "Unknown order creation error.";
+
     console.error(
       "WooCommerce order creation failed:",
+      errorMessage,
       error,
     );
 
@@ -2014,7 +2439,10 @@ export async function POST(
         success: false,
 
         error:
-          "Your order could not be placed. Please review your cart and try again.",
+          process.env.NODE_ENV ===
+          "development"
+            ? errorMessage
+            : "Your order could not be placed. Please review your cart and try again.",
 
         code:
           "order_creation_failed",
