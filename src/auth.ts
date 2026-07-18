@@ -143,31 +143,77 @@ export const {
   ],
 
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.customerId =
-          user.customerId;
+  async jwt({
+    token,
+    user,
+    trigger,
+    session,
+  }) {
+    if (user) {
+      token.customerId =
+        user.customerId;
+
+      token.name =
+        user.name;
+
+      token.email =
+        user.email;
+    }
+
+    /*
+     * useSession().update()
+     * call হলে updated customer name
+     * JWT session-এ save হবে।
+     */
+    if (
+      trigger === "update" &&
+      session &&
+      typeof session.name ===
+        "string"
+    ) {
+      const updatedName =
+        session.name.trim();
+
+      if (updatedName) {
+        token.name = updatedName;
       }
+    }
 
-      return token;
-    },
-
-    async session({
-      session,
-      token,
-    }) {
-      if (session.user) {
-        session.user.id =
-          token.sub ?? "";
-
-        session.user.customerId =
-          typeof token.customerId ===
-          "number"
-            ? token.customerId
-            : 0;
-      }
-
-      return session;
-    },
+    return token;
   },
+
+  async session({
+    session,
+    token,
+  }) {
+    if (session.user) {
+      session.user.id =
+        token.sub ?? "";
+
+      session.user.customerId =
+        typeof token.customerId ===
+        "number"
+          ? token.customerId
+          : 0;
+
+      if (
+        typeof token.name ===
+        "string"
+      ) {
+        session.user.name =
+          token.name;
+      }
+
+      if (
+        typeof token.email ===
+        "string"
+      ) {
+        session.user.email =
+          token.email;
+      }
+    }
+
+    return session;
+  },
+},
 });

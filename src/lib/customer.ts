@@ -34,6 +34,22 @@ export type UpdateCustomerAddressesInput = {
   >;
 };
 
+export type UpdateCustomerProfileInput = {
+  first_name: string;
+  last_name: string;
+
+  billing: WooCommerceCustomerAddress;
+
+  shipping: Omit<
+    WooCommerceCustomerAddress,
+    "email" | "phone"
+  >;
+};
+
+type CustomerUpdateInput =
+  | UpdateCustomerAddressesInput
+  | UpdateCustomerProfileInput;
+
 function getRequiredEnvironmentVariable(
   name: string,
 ): string {
@@ -109,7 +125,7 @@ async function customerRequest(
   customerId: number,
   options?: {
     method?: "GET" | "PUT";
-    body?: UpdateCustomerAddressesInput;
+    body?: CustomerUpdateInput;
   },
 ): Promise<WooCommerceCustomer | null> {
   if (
@@ -130,7 +146,8 @@ async function customerRequest(
     storeUrl,
   );
 
-  const method = options?.method ?? "GET";
+  const method =
+    options?.method ?? "GET";
 
   const response = await fetch(
     endpoint,
@@ -209,6 +226,19 @@ export async function getCustomerProfile(
 export async function updateCustomerAddresses(
   customerId: number,
   input: UpdateCustomerAddressesInput,
+): Promise<WooCommerceCustomer | null> {
+  return customerRequest(
+    customerId,
+    {
+      method: "PUT",
+      body: input,
+    },
+  );
+}
+
+export async function updateCustomerProfile(
+  customerId: number,
+  input: UpdateCustomerProfileInput,
 ): Promise<WooCommerceCustomer | null> {
   return customerRequest(
     customerId,
