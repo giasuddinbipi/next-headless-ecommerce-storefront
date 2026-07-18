@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import ReorderResultBanner from "@/components/cart/ReorderResultBanner";
 
 import { useCartStore } from "@/store/cart-store";
 
@@ -109,25 +110,29 @@ export default function CartPage() {
     <main className="min-h-screen bg-gray-50 px-4 py-10 sm:px-6">
       <div className="mx-auto max-w-7xl">
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">
-              Shopping cart
-            </h1>
+  <div>
+    <h1 className="text-3xl font-bold text-gray-900 sm:text-4xl">
+      Shopping cart
+    </h1>
 
-            <p className="mt-2 text-gray-600">
-              {totalItems}{" "}
-              {totalItems === 1 ? "item" : "items"} in your cart
-            </p>
-          </div>
+    <p className="mt-2 text-gray-600">
+      {totalItems}{" "}
+      {totalItems === 1 ? "item" : "items"} in your cart
+    </p>
+  </div>
 
-          <button
-            type="button"
-            onClick={clearCart}
-            className="text-sm font-semibold text-red-600 transition hover:text-red-800"
-          >
-            Clear cart
-          </button>
-        </div>
+  <button
+    type="button"
+    onClick={clearCart}
+    className="text-sm font-semibold text-red-600 transition hover:text-red-800"
+  >
+    Clear cart
+  </button>
+</div>
+
+<div className="mb-8">
+  <ReorderResultBanner />
+</div>
 
         <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
           <section className="space-y-4">
