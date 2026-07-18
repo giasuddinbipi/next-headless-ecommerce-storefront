@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   type FormEvent,
@@ -153,6 +154,7 @@ export default function CheckoutClient({
   initialValues,
   hasSavedAddress,
 }: CheckoutClientProps) {
+  const router = useRouter();
   const [mounted, setMounted] =
     useState(false);
 
@@ -506,20 +508,32 @@ export default function CheckoutClient({
               ) === "on",
 
             items: items.map(
-              (item) => ({
-                productId:
-                  item.productId,
+  (item) => ({
+    productId:
+      item.productId,
 
-                variationId:
-                  item.variationId,
+    ...(item.variationId
+      ? {
+          variationId:
+            item.variationId,
+        }
+      : {}),
 
-                quantity:
-                  item.quantity,
+    quantity:
+      item.quantity,
 
-                attributes:
-                  item.attributes,
-              }),
-            ),
+    attributes:
+      item.attributes.map(
+        (attribute) => ({
+          name:
+            attribute.name,
+
+          option:
+            attribute.option,
+        }),
+      ),
+  }),
+),
           }),
         },
       );
@@ -530,10 +544,53 @@ export default function CheckoutClient({
           .catch(() => null);
 
       if (!response.ok) {
-        throw new Error(
-          getErrorMessage(data),
-        );
-      }
+  const errorMessage =
+    getErrorMessage(data);
+
+  const errorCode =
+    isObject(data) &&
+    typeof data.code ===
+      "string"
+      ? data.code
+      : "";
+
+  /*
+   * Checkout submit করার আগে stock,
+   * availability বা quantity বদলে গেলে
+   * customer-কে cart page-এ ফেরত দেওয়া হবে।
+   *
+   * Cart page সেখানে fresh validation
+   * চালিয়ে পরিবর্তন দেখাবে।
+   */
+  if (
+    response.status === 409 &&
+    (
+      errorCode ===
+        "checkout_cart_changed" ||
+      errorCode ===
+        "checkout_cart_empty"
+    )
+  ) {
+    try {
+      sessionStorage.setItem(
+        "checkout-conflict-message",
+        errorMessage,
+      );
+    } catch {
+      // Storage unavailable হলেও redirect চলবে।
+    }
+
+    router.push(
+      "/cart?checkoutReview=required",
+    );
+
+    return;
+  }
+
+  throw new Error(
+    errorMessage,
+  );
+}
 
       if (!isOrderResult(data)) {
         throw new Error(
