@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
+import WishlistHeaderLink from "@/components/wishlist/WishlistHeaderLink";
 import {
   useEffect,
   useRef,
@@ -125,6 +126,7 @@ export default function Header() {
         {/* Right-side controls */}
         <div className="flex items-center gap-1 sm:gap-2">
           {/* Authentication controls */}
+          <WishlistHeaderLink />
           {status === "loading" ? (
             <div className="h-9 w-16 animate-pulse rounded-lg bg-gray-200 sm:w-24" />
           ) : status ===

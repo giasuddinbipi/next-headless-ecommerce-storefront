@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import Link from "next/link";
 
+import OrderStatusTimeline from "@/components/account/OrderStatusTimeline";
+
 import {
   notFound,
   redirect,
@@ -316,6 +318,18 @@ export default async function OrderDetailsPage({
             </div>
           </div>
         </header>
+
+        <section className="mt-8 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+          <h2 className="text-xl font-bold text-gray-900">
+            Order progress
+          </h2>
+
+          <div className="mt-6">
+            <OrderStatusTimeline
+             status={order.status}
+            />
+          </div>
+        </section>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
           <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-7">

@@ -6,6 +6,8 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 
+import OrderStatusTimeline from "@/components/account/OrderStatusTimeline";
+
 import {
   getCustomerOrders,
   type WooCommerceOrder,
@@ -154,7 +156,7 @@ export default async function AccountPage() {
             >
               Edit profile
             </Link>
-            
+
             <Link
                  href="/account/addresses"
                 className="rounded-lg border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-800 transition hover:bg-gray-100">
@@ -258,6 +260,13 @@ export default async function AccountPage() {
                             )}
                           </p>
                         </div>
+                      </div>
+
+                      <div className="mt-5 border-b border-gray-200 pb-5">
+                        <OrderStatusTimeline
+                          status={order.status}
+                         compact
+                        />
                       </div>
 
                       <div className="mt-5 space-y-4">

@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import WishlistButton from "@/components/wishlist/WishlistButton";
 
 import { htmlToPlainText } from "@/lib/text";
 
@@ -38,7 +39,24 @@ export default function ProductCard({
     "No product description available.";
 
   return (
-    <article className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
+    <article className="relative overflow-hidden rounded-2xl border border-gray-200 bg-white">
+      
+      <div className="absolute right-3 top-3 z-20">
+      <WishlistButton
+       product={{
+      productId: product.id,
+      name: product.name,
+      slug: product.slug,
+      price: product.price,
+      image:
+        product.images?.[0]?.src,
+      stockStatus:
+        product.stock_status,
+      productType:
+        product.type,
+      }}
+      />
+    </div>
       <Link
         href={`/products/${product.slug}`}
       >
