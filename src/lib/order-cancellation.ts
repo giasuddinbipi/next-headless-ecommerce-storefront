@@ -1,5 +1,10 @@
 import "server-only";
 
+import {
+  sendCancellationNotifications,
+  type CancellationNotificationResult,
+} from "@/lib/cancellation-notifications";
+
 const WOO_REQUEST_TIMEOUT_MS = 15_000;
 
 const DEFAULT_CANCELLABLE_STATUSES = [
@@ -26,13 +31,8 @@ type WooCancellationOrder = {
   payment_method?: string;
   payment_method_title?: string;
 
-  date_paid?:
-    | string
-    | null;
-
-  date_modified?:
-    | string
-    | null;
+  date_paid?: string | null;
+  date_modified?: string | null;
 };
 
 type WooOrderNote = {
@@ -46,7 +46,23 @@ export type CustomerOrderCancellationResult = {
   orderNumber: string;
   status: "cancelled";
   noteAdded: boolean;
+
+  notifications: {
+    mode:
+      | "native"
+      | "bridge"
+      | "failed";
+
+    customerTriggered:
+      boolean | null;
+
+    adminTriggered:
+      boolean | null;
+  };
 };
+
+type CancellationNotificationSummary =
+  CustomerOrderCancellationResult["notifications"];
 
 export class OrderCancellationError extends Error {
   status: number;
@@ -66,6 +82,10 @@ export class OrderCancellationError extends Error {
     this.code = code;
   }
 }
+
+/* =========================================================
+   General helpers
+========================================================= */
 
 function isObject(
   value: unknown,
@@ -102,6 +122,15 @@ function getWooCommerceApiBaseUrl(
       .trim()
       .replace(/\/+$/, "");
 
+  /*
+   * WOOCOMMERCE_URL দুইভাবে থাকতে পারে:
+   *
+   * https://example.com
+   *
+   * অথবা
+   *
+   * https://example.com/wp-json/wc/v3
+   */
   if (
     normalizedUrl.endsWith(
       "/wp-json/wc/v3",
@@ -159,6 +188,48 @@ function getWooCommerceErrorMessage(
 
   return null;
 }
+
+function normalizeCancellationReason(
+  reason: string,
+): string {
+  return reason
+    .replace(
+      /[\u0000-\u001F\u007F]/g,
+      " ",
+    )
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function createNotificationSummary(
+  result:
+    | CancellationNotificationResult
+    | null,
+): CancellationNotificationSummary {
+  if (!result) {
+    return {
+      mode: "failed",
+      customerTriggered: false,
+      adminTriggered: false,
+    };
+  }
+
+  return {
+    mode: result.mode,
+
+    customerTriggered:
+      result.customer.triggered,
+
+    adminTriggered:
+      result.admin.triggered,
+  };
+}
+
+/* =========================================================
+   WooCommerce request helper
+========================================================= */
 
 async function wooCommerceCancellationRequest<T>({
   path,
@@ -251,10 +322,12 @@ async function wooCommerceCancellationRequest<T>({
       throw new OrderCancellationError(
         message ||
           "WooCommerce could not process the cancellation request.",
+
         response.status >= 400 &&
         response.status < 600
           ? response.status
           : 502,
+
         "woocommerce_cancellation_failed",
       );
     }
@@ -290,6 +363,10 @@ async function wooCommerceCancellationRequest<T>({
     clearTimeout(timeout);
   }
 }
+
+/* =========================================================
+   Cancellation configuration
+========================================================= */
 
 export function getCustomerCancellableOrderStatuses(): string[] {
   const configuredStatuses =
@@ -331,6 +408,47 @@ export function canCustomerCancelOrder(
   );
 }
 
+/* =========================================================
+   Cancellation notification helper
+========================================================= */
+
+async function processCancellationNotifications({
+  orderId,
+  orderNumber,
+  retryingExistingCancellation = false,
+}: {
+  orderId: number;
+  orderNumber: string;
+  retryingExistingCancellation?: boolean;
+}): Promise<CancellationNotificationResult | null> {
+  try {
+    return await sendCancellationNotifications(
+      orderId,
+    );
+  } catch (notificationError) {
+    console.error(
+      retryingExistingCancellation
+        ? "Existing cancellation notification retry failed:"
+        : "Cancellation notifications could not be processed:",
+      {
+        orderId,
+        orderNumber,
+
+        error:
+          notificationError instanceof Error
+            ? notificationError.message
+            : notificationError,
+      },
+    );
+
+    return null;
+  }
+}
+
+/* =========================================================
+   Cancel customer order
+========================================================= */
+
 export async function cancelCustomerWooCommerceOrder({
   orderId,
   customerId,
@@ -363,15 +481,9 @@ export async function cancelCustomerWooCommerceOrder({
   }
 
   const normalizedReason =
-    reason
-      .replace(
-        /[\u0000-\u001F\u007F]/g,
-        " ",
-      )
-      .replace(/[<>]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 500);
+    normalizeCancellationReason(
+      reason,
+    );
 
   if (
     normalizedReason.length < 10
@@ -384,8 +496,8 @@ export async function cancelCustomerWooCommerceOrder({
   }
 
   /*
-   * Order আবার WooCommerce থেকে load করা হচ্ছে।
-   * Browser বা client-provided status বিশ্বাস করা হচ্ছে না।
+   * Browser থেকে পাঠানো order status বিশ্বাস করা হচ্ছে না।
+   * Order সরাসরি WooCommerce থেকে আবার load করা হচ্ছে।
    */
   const currentOrder =
     await wooCommerceCancellationRequest<WooCancellationOrder>(
@@ -410,10 +522,31 @@ export async function cancelCustomerWooCommerceOrder({
     );
   }
 
+  const currentStatus =
+    currentOrder.status
+      .trim()
+      .toLowerCase();
+
+  /*
+   * ইতোমধ্যে cancelled হলে status আবার update করা হবে না।
+   * Notification metadata duplicate email আটকাবে।
+   */
   if (
-    currentOrder.status ===
-    "cancelled"
+    currentStatus === "cancelled"
   ) {
+    const notificationResult =
+      await processCancellationNotifications(
+        {
+          orderId,
+
+          orderNumber:
+            currentOrder.number,
+
+          retryingExistingCancellation:
+            true,
+        },
+      );
+
     return {
       orderId:
         currentOrder.id,
@@ -423,10 +556,23 @@ export async function cancelCustomerWooCommerceOrder({
 
       status: "cancelled",
 
-      noteAdded: true,
+      /*
+       * Order আগে cancelled হওয়ায় note-এর সঠিক
+       * অবস্থা এই request থেকে নিশ্চিত করা যায় না।
+       */
+      noteAdded: false,
+
+      notifications:
+        createNotificationSummary(
+          notificationResult,
+        ),
     };
   }
 
+  /*
+   * Recorded payment থাকা order customer সরাসরি
+   * cancel করতে পারবে না। Refund/support review লাগবে।
+   */
   if (
     currentOrder.date_paid
   ) {
@@ -439,11 +585,11 @@ export async function cancelCustomerWooCommerceOrder({
 
   if (
     !canCustomerCancelOrder(
-      currentOrder.status,
+      currentStatus,
     )
   ) {
     throw new OrderCancellationError(
-      `Orders with status "${currentOrder.status.replace(
+      `Orders with status "${currentStatus.replace(
         /-/g,
         " ",
       )}" can no longer be cancelled online. Please contact customer support.`,
@@ -455,6 +601,10 @@ export async function cancelCustomerWooCommerceOrder({
   const cancelledAt =
     new Date().toISOString();
 
+  /*
+   * Previous status metadata notification bridge-কে
+   * native বনাম custom email নির্বাচন করতে সাহায্য করে।
+   */
   const updatedOrder =
     await wooCommerceCancellationRequest<WooCancellationOrder>(
       {
@@ -497,13 +647,23 @@ export async function cancelCustomerWooCommerceOrder({
               value:
                 String(customerId),
             },
+
+            {
+              key:
+                "_headless_previous_status",
+
+              value:
+                currentStatus,
+            },
           ],
         },
       },
     );
 
   if (
-    updatedOrder.status !==
+    updatedOrder.status
+      .trim()
+      .toLowerCase() !==
     "cancelled"
   ) {
     throw new OrderCancellationError(
@@ -514,7 +674,7 @@ export async function cancelCustomerWooCommerceOrder({
   }
 
   /*
-   * Admin-visible order note best-effort।
+   * Admin-visible order note best effort।
    * Note fail করলেও order ইতোমধ্যে cancelled।
    */
   let noteAdded = false;
@@ -542,6 +702,10 @@ export async function cancelCustomerWooCommerceOrder({
       "Cancellation order note could not be added:",
       {
         orderId,
+
+        orderNumber:
+          updatedOrder.number,
+
         error:
           noteError instanceof Error
             ? noteError.message
@@ -549,6 +713,20 @@ export async function cancelCustomerWooCommerceOrder({
       },
     );
   }
+
+  /*
+   * Email ব্যর্থ হলেও cancellation rollback হবে না।
+   * Customer ও admin notification best effort।
+   */
+  const notificationResult =
+    await processCancellationNotifications(
+      {
+        orderId,
+
+        orderNumber:
+          updatedOrder.number,
+      },
+    );
 
   return {
     orderId:
@@ -560,5 +738,10 @@ export async function cancelCustomerWooCommerceOrder({
     status: "cancelled",
 
     noteAdded,
+
+    notifications:
+      createNotificationSummary(
+        notificationResult,
+      ),
   };
 }
