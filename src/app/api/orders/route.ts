@@ -16,6 +16,10 @@ import {
 } from "@/lib/coupons";
 
 import {
+  sendWooCommerceOrderDetailsEmail,
+} from "@/lib/order-email";
+
+import {
   createWooCommerceOrder,
   getProductById,
   getProductVariations,
@@ -2310,6 +2314,42 @@ export async function POST(
         orderInput,
       );
 
+
+      /*
+        * Email ব্যর্থ হলেও order creation
+        * response ব্যর্থ করা হবে না।
+        *
+        * তা না হলে customer আবার Place order
+        * চাপতে পারে এবং duplicate order হতে পারে।
+        */
+        let confirmationEmailSent =
+          false;
+
+        try {
+          await sendWooCommerceOrderDetailsEmail(
+            order.id,
+          );
+
+          confirmationEmailSent =
+            true;
+        } catch (emailError) {
+          console.error(
+            "Order confirmation email failed:",
+            {
+              orderId:
+                order.id,
+
+              orderNumber:
+                order.number,
+
+              error:
+                emailError instanceof Error
+                  ? emailError.message
+                  : emailError,
+            },
+          );
+        }
+
     return NextResponse.json(
       {
         success: true,
@@ -2331,6 +2371,9 @@ export async function POST(
 
         currency:
           order.currency,
+
+        emailSent:
+          confirmationEmailSent,
 
         discountTotal:
           order.discount_total ??

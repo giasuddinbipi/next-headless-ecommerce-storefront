@@ -35,6 +35,7 @@ type OrderResult = {
   status: string;
   currency: string;
   total: string;
+  emailSent: boolean;
 };
 
 type CouponDiscountType =
@@ -109,7 +110,8 @@ function isOrderResult(
     typeof data.orderNumber === "string" &&
     typeof data.status === "string" &&
     typeof data.currency === "string" &&
-    typeof data.total === "string"
+    typeof data.total === "string" &&
+    typeof data.emailSent === "boolean"
   );
 }
 
@@ -577,11 +579,27 @@ export default function CheckoutClient({
             Order placed successfully
           </h1>
 
-          <p className="mt-3 text-gray-600">
-            Thank you. Your Cash on
-            Delivery order has been
-            submitted.
-          </p>
+            <p className="mt-3 text-gray-600">
+              Thank you. Your Cash on
+              Delivery order has been
+              submitted.
+            </p>
+
+            {orderResult.emailSent ? (
+              <div className="mt-5 rounded-xl border border-green-200 bg-green-50 p-4 text-sm leading-6 text-green-800">
+                A confirmation email containing
+                your order details has been sent
+                to your billing email address.
+              </div>
+            ) : (
+              <div className="mt-5 rounded-xl border border-yellow-200 bg-yellow-50 p-4 text-sm leading-6 text-yellow-800">
+                Your order was placed
+                successfully, but the confirmation
+                email could not be sent. You can
+                still view the order from your
+                account.
+              </div>
+            )}
 
           <div className="mt-7 rounded-xl bg-gray-50 p-5 text-left">
             <div className="flex justify-between gap-4">
