@@ -144,6 +144,7 @@ export default defineConfig({
 
   "src/lib/health-dependencies.ts",
   "src/lib/health-monitoring.ts",
+  "src/lib/browser-security-headers.ts",
 ],
 
       exclude: [
