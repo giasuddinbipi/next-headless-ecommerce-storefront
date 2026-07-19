@@ -8,7 +8,7 @@ import nextConfig
   from "../../next.config";
 
 /* =========================================================
-   Helpers
+   Types
 ========================================================= */
 
 type ConfiguredHeader = {
@@ -26,6 +26,10 @@ type ConfiguredHeaderRule = {
   headers:
     ConfiguredHeader[];
 };
+
+/* =========================================================
+   Helpers
+========================================================= */
 
 function convertHeadersToRecord(
   headers:
@@ -68,9 +72,9 @@ async function getConfiguredHeaderRules():
     ConfiguredHeaderRule[];
 }
 
-async function getGlobalHeaders():
+async function getGlobalRule():
   Promise<
-    Record<string, string>
+    ConfiguredHeaderRule
   > {
   const rules =
     await getConfiguredHeaderRules();
@@ -90,13 +94,23 @@ async function getGlobalHeaders():
     );
   }
 
+  return globalRule;
+}
+
+async function getGlobalHeaders():
+  Promise<
+    Record<string, string>
+  > {
+  const globalRule =
+    await getGlobalRule();
+
   return convertHeadersToRecord(
     globalRule.headers,
   );
 }
 
 /* =========================================================
-   Framework disclosure
+   Framework configuration
 ========================================================= */
 
 describe(
@@ -205,33 +219,19 @@ describe(
     it(
       "does not contain duplicate global header names",
       async () => {
-        const rules =
-          await getConfiguredHeaderRules();
-
         const globalRule =
-          rules.find(
-            (
-              rule,
-            ) =>
-              rule.source ===
-              "/:path*",
-          );
-
-        expect(
-          globalRule,
-        ).toBeDefined();
+          await getGlobalRule();
 
         const names =
           globalRule
-            ?.headers
+            .headers
             .map(
               (
                 header,
               ) =>
                 header.key
                   .toLowerCase(),
-            ) ??
-          [];
+            );
 
         expect(
           new Set(
@@ -240,6 +240,53 @@ describe(
         ).toBe(
           names.length,
         );
+      },
+    );
+  },
+);
+
+/* =========================================================
+   CSP report-only integration
+========================================================= */
+
+describe(
+  "Next.js CSP report-only configuration",
+  () => {
+    it(
+      "adds a report-only CSP header",
+      async () => {
+        const headers =
+          await getGlobalHeaders();
+
+        expect(
+          headers[
+            "content-security-policy-report-only"
+          ],
+        ).toContain(
+          "default-src 'self'",
+        );
+
+        expect(
+          headers[
+            "content-security-policy-report-only"
+          ],
+        ).toContain(
+          "report-uri /api/security/csp-report",
+        );
+      },
+    );
+
+    it(
+      "does not enable enforced CSP yet",
+      async () => {
+        const headers =
+          await getGlobalHeaders();
+
+        expect(
+          headers[
+            "content-security-policy"
+          ],
+        ).toBeUndefined();
       },
     );
   },

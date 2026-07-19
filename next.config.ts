@@ -6,18 +6,16 @@ import {
   getBrowserSecurityHeaders,
 } from "./src/lib/browser-security-headers";
 
+import {
+  DEFAULT_CSP_REPORT_URI,
+  getContentSecurityPolicyReportOnlyHeader,
+} from "./src/lib/content-security-policy";
+
 const nextConfig:
   NextConfig = {
-  /*
-   * Remove the default:
-   * X-Powered-By: Next.js
-   */
   poweredByHeader:
     false,
 
-  /*
-   * Allow WooCommerce media hosted on the CMS domain.
-   */
   images: {
     remotePatterns: [
       {
@@ -36,22 +34,28 @@ const nextConfig:
     ],
   },
 
-  /*
-   * Apply the browser security-header policy
-   * to every storefront and API route.
-   */
   async headers() {
+    const isProduction =
+      process.env.NODE_ENV ===
+      "production";
+
     return [
       {
         source:
           "/:path*",
 
-        headers:
-          getBrowserSecurityHeaders({
-            isProduction:
-              process.env.NODE_ENV ===
-              "production",
+        headers: [
+          ...getBrowserSecurityHeaders({
+            isProduction,
           }),
+
+          getContentSecurityPolicyReportOnlyHeader({
+            isProduction,
+
+            reportUri:
+              DEFAULT_CSP_REPORT_URI,
+          }),
+        ],
       },
     ];
   },
