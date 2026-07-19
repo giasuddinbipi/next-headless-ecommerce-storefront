@@ -1,15 +1,20 @@
+import "@testing-library/jest-dom/vitest";
+
+import {
+  cleanup,
+} from "@testing-library/react";
+
 import {
   afterEach,
   vi,
 } from "vitest";
 
-/*
- * প্রতিটি test-এর পরে timer state reset হবে।
- *
- * clearMocks, mockReset, restoreMocks,
- * unstubEnvs এবং unstubGlobals configuration
- * থেকেও automatically চলবে।
- */
 afterEach(() => {
+  /*
+   * globals:false থাকায় explicit cleanup
+   * component tests-এর মধ্যে DOM leakage আটকায়।
+   */
+  cleanup();
+
   vi.useRealTimers();
 });
