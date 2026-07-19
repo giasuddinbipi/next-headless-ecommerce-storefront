@@ -8,10 +8,25 @@ export type ContentSecurityPolicyOptions =
       boolean;
 
     /*
-     * null দিলে reporting directive disabled থাকবে।
+     * null disables the legacy report-uri directive.
      */
     reportUri?:
       string | null;
+
+    /*
+     * null disables the modern report-to directive.
+     */
+    reportTo?:
+      string | null;
+  }>;
+
+export type ReportingEndpointsHeaderOptions =
+  Readonly<{
+    group?:
+      string;
+
+    endpoint?:
+      string;
   }>;
 
 export type ContentSecurityPolicyHeader =
@@ -30,14 +45,23 @@ export type ContentSecurityPolicyHeader =
 export const DEFAULT_CSP_REPORT_URI =
   "/api/security/csp-report";
 
+export const DEFAULT_CSP_REPORT_TO_GROUP =
+  "csp-endpoint";
+
 const WOOCOMMERCE_CMS_ORIGIN =
   "https://cms.globalizedhost.com";
 
 const REPORT_ONLY_HEADER_NAME =
   "Content-Security-Policy-Report-Only";
 
+const REPORTING_ENDPOINTS_HEADER_NAME =
+  "Reporting-Endpoints";
+
 const SAFE_RELATIVE_REPORT_URI_PATTERN =
   /^\/[A-Za-z0-9._~/%?=&-]*$/;
+
+const SAFE_REPORT_TO_GROUP_PATTERN =
+  /^[a-z][a-z0-9_-]{0,63}$/;
 
 /* =========================================================
    Internal types
@@ -71,6 +95,78 @@ function resolveProductionMode(
     process.env.NODE_ENV ===
     "production"
   );
+}
+
+/* =========================================================
+   Validation helpers
+========================================================= */
+
+function normalizeReportUri(
+  value:
+    string | null | undefined,
+): string | null {
+  if (
+    value ===
+    null
+  ) {
+    return null;
+  }
+
+  const normalized =
+    (
+      value ??
+      DEFAULT_CSP_REPORT_URI
+    ).trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    !SAFE_RELATIVE_REPORT_URI_PATTERN.test(
+      normalized,
+    )
+  ) {
+    throw new Error(
+      "CSP report URI must be a safe same-origin relative path.",
+    );
+  }
+
+  return normalized;
+}
+
+function normalizeReportToGroup(
+  value:
+    string | null | undefined,
+): string | null {
+  if (
+    value ===
+    null
+  ) {
+    return null;
+  }
+
+  const normalized =
+    (
+      value ??
+      DEFAULT_CSP_REPORT_TO_GROUP
+    ).trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    !SAFE_REPORT_TO_GROUP_PATTERN.test(
+      normalized,
+    )
+  ) {
+    throw new Error(
+      "CSP report-to group must contain only safe lowercase token characters.",
+    );
+  }
+
+  return normalized;
 }
 
 /* =========================================================
@@ -113,45 +209,6 @@ function serializeDirective(
   );
 }
 
-function normalizeReportUri(
-  value:
-    string | null | undefined,
-): string | null {
-  if (
-    value ===
-    null
-  ) {
-    return null;
-  }
-
-  const normalized =
-    (
-      value ??
-      DEFAULT_CSP_REPORT_URI
-    ).trim();
-
-  if (!normalized) {
-    return null;
-  }
-
-  /*
-   * Report destination same-origin relative path হতে হবে।
-   * Control character, whitespace এবং directive separator
-   * গ্রহণ করা হবে না।
-   */
-  if (
-    !SAFE_RELATIVE_REPORT_URI_PATTERN.test(
-      normalized,
-    )
-  ) {
-    throw new Error(
-      "CSP report URI must be a safe same-origin relative path.",
-    );
-  }
-
-  return normalized;
-}
-
 /* =========================================================
    Policy construction
 ========================================================= */
@@ -170,23 +227,19 @@ export function createContentSecurityPolicy(
       options.reportUri,
     );
 
+  const reportTo =
+    normalizeReportToGroup(
+      options.reportTo,
+    );
+
   const scriptSources = [
     "'self'",
-
-    /*
-     * Current Next.js application compatibility।
-     * Strict nonce-based script policy পরে আলাদা
-     * hardening step-এ করা হবে।
-     */
     "'unsafe-inline'",
 
     ...(
       isProduction
         ? []
         : [
-            /*
-             * Next.js development tooling এবং source maps।
-             */
             "'unsafe-eval'",
           ]
     ),
@@ -194,24 +247,19 @@ export function createContentSecurityPolicy(
 
   const connectSources = [
     "'self'",
-
     WOOCOMMERCE_CMS_ORIGIN,
 
     ...(
       isProduction
         ? []
         : [
-            /*
-             * Development hot-module connection।
-             */
             "ws:",
           ]
     ),
   ];
 
   const directives:
-    ContentSecurityDirective[] =
-    [
+    ContentSecurityDirective[] = [
       {
         name:
           "default-src",
@@ -353,6 +401,9 @@ export function createContentSecurityPolicy(
     });
   }
 
+  /*
+   * Legacy browser compatibility.
+   */
   if (
     reportUri
   ) {
@@ -362,6 +413,22 @@ export function createContentSecurityPolicy(
 
       values: [
         reportUri,
+      ],
+    });
+  }
+
+  /*
+   * Modern Reporting API destination group.
+   */
+  if (
+    reportTo
+  ) {
+    directives.push({
+      name:
+        "report-to",
+
+      values: [
+        reportTo,
       ],
     });
   }
@@ -376,7 +443,7 @@ export function createContentSecurityPolicy(
 }
 
 /* =========================================================
-   Report-only header
+   CSP report-only header
 ========================================================= */
 
 export function getContentSecurityPolicyReportOnlyHeader(
@@ -391,5 +458,46 @@ export function getContentSecurityPolicyReportOnlyHeader(
       createContentSecurityPolicy(
         options,
       ),
+  };
+}
+
+/* =========================================================
+   Reporting-Endpoints header
+========================================================= */
+
+export function getReportingEndpointsHeader(
+  options:
+    ReportingEndpointsHeaderOptions = {},
+): ContentSecurityPolicyHeader {
+  const group =
+    normalizeReportToGroup(
+      options.group,
+    );
+
+  const endpoint =
+    normalizeReportUri(
+      options.endpoint,
+    );
+
+  if (
+    !group ||
+    !endpoint
+  ) {
+    throw new Error(
+      "Reporting endpoint group and destination are required.",
+    );
+  }
+
+  /*
+   * Reporting-Endpoints is a Structured Fields dictionary:
+   *
+   * csp-endpoint="/api/security/csp-report"
+   */
+  return {
+    key:
+      REPORTING_ENDPOINTS_HEADER_NAME,
+
+    value:
+      `${group}="${endpoint}"`,
   };
 }

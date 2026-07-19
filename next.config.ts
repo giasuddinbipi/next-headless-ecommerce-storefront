@@ -7,8 +7,10 @@ import {
 } from "./src/lib/browser-security-headers";
 
 import {
+  DEFAULT_CSP_REPORT_TO_GROUP,
   DEFAULT_CSP_REPORT_URI,
   getContentSecurityPolicyReportOnlyHeader,
+  getReportingEndpointsHeader,
 } from "./src/lib/content-security-policy";
 
 const nextConfig:
@@ -53,6 +55,17 @@ const nextConfig:
             isProduction,
 
             reportUri:
+              DEFAULT_CSP_REPORT_URI,
+
+            reportTo:
+              DEFAULT_CSP_REPORT_TO_GROUP,
+          }),
+
+          getReportingEndpointsHeader({
+            group:
+              DEFAULT_CSP_REPORT_TO_GROUP,
+
+            endpoint:
               DEFAULT_CSP_REPORT_URI,
           }),
         ],

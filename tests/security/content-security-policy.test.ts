@@ -6,8 +6,10 @@ import {
 
 import {
   createContentSecurityPolicy,
+  DEFAULT_CSP_REPORT_TO_GROUP,
   DEFAULT_CSP_REPORT_URI,
   getContentSecurityPolicyReportOnlyHeader,
+  getReportingEndpointsHeader,
 } from "@/lib/content-security-policy";
 
 /* =========================================================
@@ -103,6 +105,14 @@ describe(
         expect(
           directives.get(
             "frame-ancestors",
+          ),
+        ).toEqual([
+          "'none'",
+        ]);
+
+        expect(
+          directives.get(
+            "frame-src",
           ),
         ).toEqual([
           "'none'",
@@ -263,14 +273,14 @@ describe(
 );
 
 /* =========================================================
-   Reporting behavior
+   Reporting directives
 ========================================================= */
 
 describe(
   "createContentSecurityPolicy reporting",
   () => {
     it(
-      "adds the default same-origin report URI",
+      "adds both legacy and modern reporting directives",
       () => {
         const directives =
           parsePolicy(
@@ -287,11 +297,19 @@ describe(
         ).toEqual([
           DEFAULT_CSP_REPORT_URI,
         ]);
+
+        expect(
+          directives.get(
+            "report-to",
+          ),
+        ).toEqual([
+          DEFAULT_CSP_REPORT_TO_GROUP,
+        ]);
       },
     );
 
     it(
-      "allows reporting to be explicitly disabled",
+      "allows both reporting directives to be disabled",
       () => {
         const directives =
           parsePolicy(
@@ -301,12 +319,23 @@ describe(
 
               reportUri:
                 null,
+
+              reportTo:
+                null,
             }),
           );
 
         expect(
           directives.has(
             "report-uri",
+          ),
+        ).toBe(
+          false,
+        );
+
+        expect(
+          directives.has(
+            "report-to",
           ),
         ).toBe(
           false,
@@ -331,11 +360,29 @@ describe(
         );
       },
     );
+
+    it(
+      "rejects unsafe report-to group values",
+      () => {
+        expect(
+          () =>
+            createContentSecurityPolicy({
+              isProduction:
+                true,
+
+              reportTo:
+                'csp", injected="value',
+            }),
+        ).toThrow(
+          "CSP report-to group must contain only safe lowercase token characters.",
+        );
+      },
+    );
   },
 );
 
 /* =========================================================
-   Header integrity
+   CSP report-only header integrity
 ========================================================= */
 
 describe(
@@ -360,6 +407,18 @@ describe(
           header.value,
         ).toContain(
           "default-src 'self'",
+        );
+
+        expect(
+          header.value,
+        ).toContain(
+          `report-uri ${DEFAULT_CSP_REPORT_URI}`,
+        );
+
+        expect(
+          header.value,
+        ).toContain(
+          `report-to ${DEFAULT_CSP_REPORT_TO_GROUP}`,
         );
 
         expect(
@@ -399,6 +458,87 @@ describe(
             values.length,
           );
         }
+      },
+    );
+  },
+);
+
+/* =========================================================
+   Modern Reporting API header
+========================================================= */
+
+describe(
+  "Reporting-Endpoints header",
+  () => {
+    it(
+      "creates the default same-origin modern reporting endpoint",
+      () => {
+        const header =
+          getReportingEndpointsHeader();
+
+        expect(
+          header,
+        ).toEqual({
+          key:
+            "Reporting-Endpoints",
+
+          value:
+            'csp-endpoint="/api/security/csp-report"',
+        });
+      },
+    );
+
+    it(
+      "supports a valid custom endpoint group",
+      () => {
+        const header =
+          getReportingEndpointsHeader({
+            group:
+              "storefront-csp",
+
+            endpoint:
+              "/api/security/csp-report",
+          });
+
+        expect(
+          header,
+        ).toEqual({
+          key:
+            "Reporting-Endpoints",
+
+          value:
+            'storefront-csp="/api/security/csp-report"',
+        });
+      },
+    );
+
+    it(
+      "rejects an unsafe reporting group",
+      () => {
+        expect(
+          () =>
+            getReportingEndpointsHeader({
+              group:
+                'csp", injected="value',
+            }),
+        ).toThrow(
+          "CSP report-to group must contain only safe lowercase token characters.",
+        );
+      },
+    );
+
+    it(
+      "rejects an unsafe reporting destination",
+      () => {
+        expect(
+          () =>
+            getReportingEndpointsHeader({
+              endpoint:
+                "/api/security/report;\r\nX-Test: injected",
+            }),
+        ).toThrow(
+          "CSP report URI must be a safe same-origin relative path.",
+        );
       },
     );
   },

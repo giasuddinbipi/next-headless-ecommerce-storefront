@@ -1,11 +1,21 @@
 import nextEnv from "@next/env";
 
-const {
-  loadEnvConfig,
-} = nextEnv;
 /* =========================================================
    Environment loading
 ========================================================= */
+
+const {
+  loadEnvConfig,
+} = nextEnv;
+
+if (
+  typeof loadEnvConfig !==
+  "function"
+) {
+  throw new Error(
+    "@next/env did not provide loadEnvConfig.",
+  );
+}
 
 loadEnvConfig(
   process.cwd(),
@@ -31,6 +41,12 @@ const DEFAULT_ROUTES = [
 
 const EXPECTED_REPORT_URI =
   "/api/security/csp-report";
+
+const EXPECTED_REPORT_TO_GROUP =
+  "csp-endpoint";
+
+const EXPECTED_REPORTING_ENDPOINTS_HEADER =
+  `${EXPECTED_REPORT_TO_GROUP}="${EXPECTED_REPORT_URI}"`;
 
 const WOOCOMMERCE_CMS_ORIGIN =
   "https://cms.globalizedhost.com";
@@ -123,6 +139,10 @@ const REQUIRED_POLICY_DIRECTIVES = {
 
   "report-uri": [
     EXPECTED_REPORT_URI,
+  ],
+
+  "report-to": [
+    EXPECTED_REPORT_TO_GROUP,
   ],
 };
 
@@ -687,6 +707,24 @@ function validateCspHeaders({
     `${route}: Content-Security-Policy-Report-Only is present.`,
   );
 
+  const reportingEndpoints =
+    response.headers.get(
+      "reporting-endpoints",
+    );
+
+  if (
+    reportingEndpoints ===
+    EXPECTED_REPORTING_ENDPOINTS_HEADER
+  ) {
+    writePass(
+      `${route}: Reporting-Endpoints is correctly configured.`,
+    );
+  } else {
+    writeFailure(
+      `${route}: expected Reporting-Endpoints="${EXPECTED_REPORTING_ENDPOINTS_HEADER}", received "${reportingEndpoints ?? "missing"}".`,
+    );
+  }
+
   if (enforcedPolicy) {
     writeFailure(
       `${route}: enforced Content-Security-Policy is active before compatibility approval.`,
@@ -708,6 +746,23 @@ function validateCspHeaders({
   } else {
     writePass(
       `${route}: CSP header contains no CR/LF control characters.`,
+    );
+  }
+
+  if (
+    reportingEndpoints &&
+    /[\r\n]/.test(
+      reportingEndpoints,
+    )
+  ) {
+    writeFailure(
+      `${route}: Reporting-Endpoints contains control characters.`,
+    );
+  } else if (
+    reportingEndpoints
+  ) {
+    writePass(
+      `${route}: Reporting-Endpoints contains no CR/LF control characters.`,
     );
   }
 
@@ -783,16 +838,18 @@ function validateCspHeaders({
   }
 
   if (
-    directives.has(
+    hasDirectiveValue(
+      directives,
       "report-to",
+      EXPECTED_REPORT_TO_GROUP,
     )
   ) {
     writePass(
-      `${route}: modern report-to directive is configured.`,
+      `${route}: modern report-to directive is correctly configured.`,
     );
   } else {
-    writeWarning(
-      `${route}: report-to is not configured yet; legacy report-uri remains active.`,
+    writeFailure(
+      `${route}: modern report-to directive is missing or incorrect.`,
     );
   }
 
@@ -855,6 +912,7 @@ async function auditRoute(
 
     routeSummaries.push({
       route,
+
       status:
         null,
 
@@ -1067,11 +1125,6 @@ async function auditReportReceiver() {
     );
   }
 
-  const acceptedHeader =
-    response.headers.get(
-      "x-csp-reports-accepted",
-    );
-
   const actionableHeader =
     response.headers.get(
       "x-csp-actionable-reports",
@@ -1093,7 +1146,7 @@ async function auditReportReceiver() {
     );
 
   if (
-    acceptedHeader ===
+    acceptedReports ===
       "1" &&
     actionableHeader ===
       "0" &&
@@ -1105,7 +1158,7 @@ async function auditReportReceiver() {
     );
   } else {
     writeFailure(
-      `Unexpected classification headers: accepted=${acceptedHeader}, actionable=${actionableHeader}, noise=${noiseHeader}.`,
+      `Unexpected classification headers: accepted=${acceptedReports}, actionable=${actionableHeader}, noise=${noiseHeader}.`,
     );
   }
 
@@ -1139,6 +1192,30 @@ async function auditReportReceiver() {
     );
   }
 
+  if (
+    duplicateHeader ===
+      "0" &&
+    loggedHeader ===
+      "1"
+  ) {
+    writePass(
+      "First-seen synthetic report was logged.",
+    );
+  } else if (
+    duplicateHeader ===
+      "1" &&
+    loggedHeader ===
+      "0"
+  ) {
+    writePass(
+      "Duplicate synthetic report was suppressed.",
+    );
+  } else {
+    writeFailure(
+      `Duplicate/logged counters are inconsistent: duplicate=${duplicateHeader}, logged=${loggedHeader}.`,
+    );
+  }
+
   const rateLimitDegraded =
     response.headers.get(
       "x-csp-ratelimit-degraded",
@@ -1146,14 +1223,14 @@ async function auditReportReceiver() {
 
   if (
     rateLimitDegraded ===
-      "false"
+    "false"
   ) {
     writePass(
       "CSP report rate limiting is healthy.",
     );
   } else if (
     rateLimitDegraded ===
-      "true"
+    "true"
   ) {
     writeWarning(
       "CSP report rate limiting is operating in degraded fail-open mode.",
@@ -1171,14 +1248,14 @@ async function auditReportReceiver() {
 
   if (
     duplicateProtectionDegraded ===
-      "false"
+    "false"
   ) {
     writePass(
       "CSP duplicate protection is healthy.",
     );
   } else if (
     duplicateProtectionDegraded ===
-      "true"
+    "true"
   ) {
     writeWarning(
       "CSP duplicate protection is operating in degraded fail-open mode.",
@@ -1188,10 +1265,47 @@ async function auditReportReceiver() {
       "CSP duplicate-protection status header is missing.",
     );
   }
+
+  const cacheControl =
+    response.headers.get(
+      "cache-control",
+    );
+
+  if (
+    cacheControl?.includes(
+      "no-store",
+    )
+  ) {
+    writePass(
+      "CSP report receiver disables response caching.",
+    );
+  } else {
+    writeFailure(
+      "CSP report receiver does not return Cache-Control: no-store.",
+    );
+  }
+
+  const reportEndpointSecurityHeader =
+    response.headers.get(
+      "x-health-check-type",
+    );
+
+  if (
+    reportEndpointSecurityHeader ===
+    "security-report"
+  ) {
+    writePass(
+      "CSP report receiver identifies the response as a security report.",
+    );
+  } else {
+    writeFailure(
+      `Unexpected CSP receiver type header "${reportEndpointSecurityHeader ?? "missing"}".`,
+    );
+  }
 }
 
 /* =========================================================
-   Summary
+   Route summary
 ========================================================= */
 
 function printRouteSummary() {
@@ -1229,6 +1343,10 @@ function printRouteSummary() {
     ),
   );
 }
+
+/* =========================================================
+   Final summary
+========================================================= */
 
 function printFinalSummary() {
   writeSection(

@@ -253,28 +253,43 @@ describe(
   "Next.js CSP report-only configuration",
   () => {
     it(
-      "adds a report-only CSP header",
-      async () => {
-        const headers =
-          await getGlobalHeaders();
+  "adds legacy and modern CSP reporting configuration",
+  async () => {
+    const headers =
+      await getGlobalHeaders();
 
-        expect(
-          headers[
-            "content-security-policy-report-only"
-          ],
-        ).toContain(
-          "default-src 'self'",
-        );
+    const policy =
+      headers[
+        "content-security-policy-report-only"
+      ];
 
-        expect(
-          headers[
-            "content-security-policy-report-only"
-          ],
-        ).toContain(
-          "report-uri /api/security/csp-report",
-        );
-      },
+    expect(
+      policy,
+    ).toContain(
+      "default-src 'self'",
     );
+
+    expect(
+      policy,
+    ).toContain(
+      "report-uri /api/security/csp-report",
+    );
+
+    expect(
+      policy,
+    ).toContain(
+      "report-to csp-endpoint",
+    );
+
+    expect(
+      headers[
+        "reporting-endpoints"
+      ],
+    ).toBe(
+      'csp-endpoint="/api/security/csp-report"',
+    );
+  },
+);
 
     it(
       "does not enable enforced CSP yet",
