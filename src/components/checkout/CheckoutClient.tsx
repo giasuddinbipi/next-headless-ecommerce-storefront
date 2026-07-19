@@ -5,14 +5,13 @@ import { useRouter } from "next/navigation";
 
 import {
   type FormEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
 
-import {
-  useCartStore,
-} from "@/store/cart-store";
+import { useCartStore } from "@/store/cart-store";
 
 export type CheckoutInitialValues = {
   firstName: string;
@@ -51,21 +50,51 @@ type OrderResult = {
 };
 
 type OrderAttempt = {
+  version: 1;
+
   key: string;
   fingerprint: string;
+
+  /*
+   * Guest recovery scope-এর জন্য original
+   * billing email browser storage-এ থাকবে।
+   */
+  billingEmail: string;
+
+  createdAt: string;
 };
+
+type RecoveryResult =
+  | "completed"
+  | "in_progress"
+  | "not_found"
+  | "conflict"
+  | "unavailable";
 
 const ORDER_ATTEMPT_STORAGE_KEY =
   "checkout-order-attempt-v1";
+
+/*
+ * Redis completed record সাত দিন রাখা হয়।
+ * Browser recovery record-ও সর্বোচ্চ সাত দিন থাকবে।
+ */
+const ORDER_ATTEMPT_MAX_AGE_MS =
+  7 * 24 * 60 * 60 * 1_000;
+
+/*
+ * Processing lock 24 ঘণ্টা থাকে।
+ * এর চেয়ে পুরোনো unresolved attempt manually
+ * clear করার option পাবে।
+ */
+const ORDER_ATTEMPT_STALE_AFTER_MS =
+  24 * 60 * 60 * 1_000;
 
 /* =========================================================
    General helpers
 ========================================================= */
 
 function formatPrice(
-  value:
-    | number
-    | string,
+  value: number | string,
   currency = "BDT",
 ): string {
   const price =
@@ -89,7 +118,8 @@ function isObject(
   value: unknown,
 ): value is UnknownRecord {
   return (
-    typeof value === "object" &&
+    typeof value ===
+      "object" &&
     value !== null &&
     !Array.isArray(value)
   );
@@ -124,6 +154,62 @@ function getErrorCode(
   return "";
 }
 
+function getRecoveryStatus(
+  data: unknown,
+): string {
+  if (
+    isObject(data) &&
+    typeof data.status ===
+      "string"
+  ) {
+    return data.status;
+  }
+
+  return "";
+}
+
+function getRetryAfterSeconds(
+  response: Response,
+  data: unknown,
+): number | null {
+  const headerValue =
+    response.headers.get(
+      "retry-after",
+    );
+
+  if (headerValue) {
+    const parsedHeader =
+      Number(headerValue);
+
+    if (
+      Number.isFinite(
+        parsedHeader,
+      ) &&
+      parsedHeader > 0
+    ) {
+      return Math.ceil(
+        parsedHeader,
+      );
+    }
+  }
+
+  if (
+    isObject(data) &&
+    typeof data.retryAfter ===
+      "number" &&
+    Number.isFinite(
+      data.retryAfter,
+    ) &&
+    data.retryAfter > 0
+  ) {
+    return Math.ceil(
+      data.retryAfter,
+    );
+  }
+
+  return null;
+}
+
 function isOrderResult(
   data: unknown,
 ): data is OrderResult {
@@ -151,23 +237,91 @@ function isOrderResult(
    Idempotency helpers
 ========================================================= */
 
+function normalizeRecoveryEmail(
+  value: string,
+): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .slice(0, 200);
+}
+
 function isOrderAttempt(
   value: unknown,
 ): value is OrderAttempt {
-  return (
-    isObject(value) &&
-    typeof value.key ===
-      "string" &&
-    value.key.length >= 16 &&
-    value.key.length <= 200 &&
-    /^[A-Za-z0-9._:-]+$/.test(
+  if (
+    !isObject(value) ||
+    value.version !== 1 ||
+    typeof value.key !==
+      "string" ||
+    value.key.length < 16 ||
+    value.key.length > 200 ||
+    !/^[A-Za-z0-9._:-]+$/.test(
       value.key,
-    ) &&
-    typeof value.fingerprint ===
-      "string" &&
-    /^[a-f0-9]{64}$/.test(
+    ) ||
+    typeof value.fingerprint !==
+      "string" ||
+    !/^[a-f0-9]{64}$/.test(
       value.fingerprint,
+    ) ||
+    typeof value.billingEmail !==
+      "string" ||
+    value.billingEmail.length >
+      200 ||
+    typeof value.createdAt !==
+      "string"
+  ) {
+    return false;
+  }
+
+  return Number.isFinite(
+    Date.parse(
+      value.createdAt,
+    ),
+  );
+}
+
+function getOrderAttemptAge(
+  attempt: OrderAttempt,
+): number {
+  const createdTime =
+    Date.parse(
+      attempt.createdAt,
+    );
+
+  if (
+    !Number.isFinite(
+      createdTime,
     )
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.max(
+    0,
+    Date.now() - createdTime,
+  );
+}
+
+function isOrderAttemptExpired(
+  attempt: OrderAttempt,
+): boolean {
+  return (
+    getOrderAttemptAge(
+      attempt,
+    ) >
+    ORDER_ATTEMPT_MAX_AGE_MS
+  );
+}
+
+function isOrderAttemptStale(
+  attempt: OrderAttempt,
+): boolean {
+  return (
+    getOrderAttemptAge(
+      attempt,
+    ) >
+    ORDER_ATTEMPT_STALE_AFTER_MS
   );
 }
 
@@ -283,8 +437,32 @@ function readStoredOrderAttempt():
       return null;
     }
 
+    /*
+     * Redis recovery retention-এর চেয়ে
+     * পুরোনো browser attempt remove হবে।
+     */
+    if (
+      isOrderAttemptExpired(
+        parsedValue,
+      )
+    ) {
+      sessionStorage.removeItem(
+        ORDER_ATTEMPT_STORAGE_KEY,
+      );
+
+      return null;
+    }
+
     return parsedValue;
   } catch {
+    try {
+      sessionStorage.removeItem(
+        ORDER_ATTEMPT_STORAGE_KEY,
+      );
+    } catch {
+      // Browser storage may be unavailable.
+    }
+
     return null;
   }
 }
@@ -302,7 +480,7 @@ function storeOrderAttempt(
   } catch {
     /*
      * sessionStorage unavailable হলেও
-     * component-এর in-memory ref কাজ করবে।
+     * component ref current tab-এ কাজ করবে।
      */
   }
 }
@@ -315,10 +493,23 @@ function removeStoredOrderAttempt():
     );
   } catch {
     /*
-     * Storage cleanup failure successful
-     * order response-কে ব্যর্থ করবে না।
+     * Cleanup failure successful order
+     * response-কে ব্যর্থ করবে না।
      */
   }
+}
+
+function waitForRecoveryPoll(
+  milliseconds: number,
+): Promise<void> {
+  return new Promise(
+    (resolve) => {
+      window.setTimeout(
+        resolve,
+        milliseconds,
+      );
+    },
+  );
 }
 
 /* =========================================================
@@ -354,6 +545,26 @@ export default function CheckoutClient({
   ] = useState(false);
 
   const [
+    recoveringOrder,
+    setRecoveringOrder,
+  ] = useState(false);
+
+  const [
+    recoveryMessage,
+    setRecoveryMessage,
+  ] = useState("");
+
+  const [
+    hasRecoverableAttempt,
+    setHasRecoverableAttempt,
+  ] = useState(false);
+
+  const [
+    allowAttemptCleanup,
+    setAllowAttemptCleanup,
+  ] = useState(false);
+
+  const [
     errorMessage,
     setErrorMessage,
   ] = useState("");
@@ -383,24 +594,441 @@ export default function CheckoutClient({
         state.clearCart,
     );
 
-  useEffect(() => {
-    setMounted(true);
-
-    /*
-     * Page reload বা uncertain network
-     * response-এর পরে একই attempt recover হবে।
-     */
-    orderAttemptRef.current =
-      readStoredOrderAttempt();
-  }, []);
-
   const clearOrderAttempt =
-    (): void => {
+    useCallback((): void => {
       orderAttemptRef.current =
         null;
 
+      setHasRecoverableAttempt(
+        false,
+      );
+
+      setAllowAttemptCleanup(
+        false,
+      );
+
       removeStoredOrderAttempt();
+    }, []);
+
+  const recoverPendingOrder =
+    useCallback(
+      async (
+        orderAttempt:
+          OrderAttempt,
+        signal?: AbortSignal,
+      ): Promise<RecoveryResult> => {
+        orderAttemptRef.current =
+          orderAttempt;
+
+        setHasRecoverableAttempt(
+          true,
+        );
+
+        setAllowAttemptCleanup(
+          isOrderAttemptStale(
+            orderAttempt,
+          ),
+        );
+
+        setRecoveringOrder(
+          true,
+        );
+
+        setRecoveryMessage(
+          "Checking your previous order attempt...",
+        );
+
+        try {
+          /*
+           * Processing response পেলে সর্বোচ্চ
+           * পাঁচবার bounded polling হবে।
+           */
+          const maximumChecks =
+            5;
+
+          for (
+            let checkNumber = 0;
+            checkNumber <
+            maximumChecks;
+            checkNumber += 1
+          ) {
+            if (
+              signal?.aborted
+            ) {
+              return "unavailable";
+            }
+
+            const response =
+              await fetch(
+                "/api/orders/idempotency-status",
+                {
+                  method:
+                    "POST",
+
+                  headers: {
+                    Accept:
+                      "application/json",
+
+                    "Content-Type":
+                      "application/json",
+
+                    "Idempotency-Key":
+                      orderAttempt.key,
+                  },
+
+                  body:
+                    JSON.stringify({
+                      billingEmail:
+                        orderAttempt
+                          .billingEmail,
+                    }),
+
+                  cache:
+                    "no-store",
+
+                  signal,
+                },
+              );
+
+            const data: unknown =
+              await response
+                .json()
+                .catch(
+                  () => null,
+                );
+
+            /*
+             * Completed order result recovered।
+             */
+            if (
+              response.ok &&
+              isOrderResult(data)
+            ) {
+              clearOrderAttempt();
+
+              setErrorMessage(
+                "",
+              );
+
+              setRecoveryMessage(
+                "",
+              );
+
+              setOrderResult(
+                data,
+              );
+
+              clearCart();
+
+              return "completed";
+            }
+
+            const status =
+              getRecoveryStatus(
+                data,
+              );
+
+            const errorCode =
+              getErrorCode(
+                data,
+              );
+
+            const responseError =
+              getErrorMessage(
+                data,
+              );
+
+            /*
+             * Recovery status endpoint rate limited।
+             *
+             * Saved attempt clear করা হবে না।
+             * Customer অপেক্ষার পরে একই attempt
+             * manually check করতে পারবে।
+             */
+            if (
+              response.status ===
+                429 &&
+              errorCode ===
+                "order_status_rate_limited"
+            ) {
+              const retryAfter =
+                getRetryAfterSeconds(
+                  response,
+                  data,
+                );
+
+              setRecoveryMessage(
+                retryAfter
+                  ? `Too many status checks were made. Please wait approximately ${retryAfter} seconds before checking again.`
+                  : "Too many status checks were made. Please wait a moment before checking again.",
+              );
+
+              return "unavailable";
+            }
+
+            /*
+             * Order এখনো processing হলে দুই
+             * সেকেন্ড পরে status আবার check হবে।
+             */
+            if (
+              response.status ===
+                202 &&
+              status ===
+                "in_progress"
+            ) {
+              setRecoveryMessage(
+                "Your order is still being processed. Please keep this page open.",
+              );
+
+              if (
+                checkNumber <
+                maximumChecks - 1
+              ) {
+                await waitForRecoveryPoll(
+                  2_000,
+                );
+
+                continue;
+              }
+
+              setAllowAttemptCleanup(
+                isOrderAttemptStale(
+                  orderAttempt,
+                ),
+              );
+
+              return "in_progress";
+            }
+
+            /*
+             * Redis-এ matching result পাওয়া যায়নি।
+             * Automaticভাবে new order submit করা
+             * হবে না। Customer history check করে
+             * attempt manually clear করবে।
+             */
+            if (
+              response.status ===
+                404 &&
+              errorCode ===
+                "order_attempt_not_found"
+            ) {
+              setAllowAttemptCleanup(
+                true,
+              );
+
+              setRecoveryMessage(
+                "No matching saved order result was found. Check your order history before clearing this attempt or placing the order again.",
+              );
+
+              return "not_found";
+            }
+
+            /*
+             * Scope/key conflict হলে unusable
+             * stored attempt remove হবে।
+             */
+            if (
+              response.status ===
+                409 &&
+              errorCode ===
+                "idempotency_key_reused"
+            ) {
+              clearOrderAttempt();
+
+              setRecoveryMessage(
+                "",
+              );
+
+              setErrorMessage(
+                responseError,
+              );
+
+              return "conflict";
+            }
+
+            throw new Error(
+              responseError,
+            );
+          }
+
+          return "in_progress";
+        } catch (error) {
+          if (
+            error instanceof
+              DOMException &&
+            error.name ===
+              "AbortError"
+          ) {
+            return "unavailable";
+          }
+
+          console.error(
+            "Pending order recovery failed:",
+            error,
+          );
+
+          setRecoveryMessage(
+            "",
+          );
+
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : "The previous order status could not be checked.",
+          );
+
+          return "unavailable";
+        } finally {
+          if (
+            !signal?.aborted
+          ) {
+            setRecoveringOrder(
+              false,
+            );
+          }
+        }
+      },
+      [
+        clearCart,
+        clearOrderAttempt,
+      ],
+    );
+
+  const handleManualRecovery =
+    useCallback(
+      async (): Promise<void> => {
+        if (
+          submitting ||
+          recoveringOrder
+        ) {
+          return;
+        }
+
+        const storedAttempt =
+          orderAttemptRef.current ??
+          readStoredOrderAttempt();
+
+        if (!storedAttempt) {
+          clearOrderAttempt();
+
+          setRecoveryMessage(
+            "",
+          );
+
+          setErrorMessage(
+            "No saved order attempt is available.",
+          );
+
+          return;
+        }
+
+        orderAttemptRef.current =
+          storedAttempt;
+
+        setHasRecoverableAttempt(
+          true,
+        );
+
+        setErrorMessage(
+          "",
+        );
+
+        await recoverPendingOrder(
+          storedAttempt,
+        );
+      },
+      [
+        clearOrderAttempt,
+        recoverPendingOrder,
+        recoveringOrder,
+        submitting,
+      ],
+    );
+
+  const handleClearStaleAttempt =
+    useCallback((): void => {
+      if (
+        submitting ||
+        recoveringOrder
+      ) {
+        return;
+      }
+
+      const confirmed =
+        window.confirm(
+          [
+            "Clear this saved order attempt?",
+            "",
+            "Before continuing, check My Orders or your confirmation email to make sure the order was not already created.",
+            "",
+            "Clearing removes automatic recovery and duplicate protection for this saved attempt.",
+          ].join("\n"),
+        );
+
+      if (!confirmed) {
+        return;
+      }
+
+      clearOrderAttempt();
+
+      setRecoveryMessage(
+        "",
+      );
+
+      setErrorMessage(
+        "The stale saved attempt was cleared. Review your cart carefully before submitting a new order.",
+      );
+    }, [
+      clearOrderAttempt,
+      recoveringOrder,
+      submitting,
+    ]);
+
+  useEffect(() => {
+    setMounted(true);
+
+    const storedAttempt =
+      readStoredOrderAttempt();
+
+    orderAttemptRef.current =
+      storedAttempt;
+
+    setHasRecoverableAttempt(
+      Boolean(
+        storedAttempt,
+      ),
+    );
+
+    setAllowAttemptCleanup(
+      storedAttempt
+        ? isOrderAttemptStale(
+            storedAttempt,
+          )
+        : false,
+    );
+
+    if (!storedAttempt) {
+      return;
+    }
+
+    const controller =
+      new AbortController();
+
+    /*
+     * Page reload-এর পরে unresolved attempt
+     * automatically recover হবে।
+     */
+    void recoverPendingOrder(
+      storedAttempt,
+      controller.signal,
+    );
+
+    return () => {
+      controller.abort();
     };
+  }, [
+    recoverPendingOrder,
+  ]);
 
   const subtotal =
     items.reduce(
@@ -446,7 +1074,26 @@ export default function CheckoutClient({
     ) => {
       event.preventDefault();
 
-      if (submitting) {
+      if (
+        submitting ||
+        recoveringOrder
+      ) {
+        return;
+      }
+
+      /*
+       * Not-found অথবা stale attempt manually
+       * resolve না করা পর্যন্ত new submission
+       * block থাকবে।
+       */
+      if (
+        hasRecoverableAttempt &&
+        allowAttemptCleanup
+      ) {
+        setErrorMessage(
+          "Resolve the saved order attempt before placing another order.",
+        );
+
         return;
       }
 
@@ -462,6 +1109,7 @@ export default function CheckoutClient({
 
       setSubmitting(true);
       setErrorMessage("");
+      setRecoveryMessage("");
 
       const formData =
         new FormData(
@@ -534,10 +1182,10 @@ export default function CheckoutClient({
       };
 
       /*
-       * Browser product price, subtotal,
-       * shipping total বা final total পাঠাবে না।
+       * Browser price, subtotal, discount,
+       * shipping total অথবা final total পাঠাবে না।
        *
-       * Server IDs, quantities এবং selected
+       * Server product IDs, quantities ও selected
        * attributes দিয়ে fresh calculation করবে।
        */
       const requestBody = {
@@ -558,11 +1206,8 @@ export default function CheckoutClient({
           ) === "on",
 
         /*
-         * এই checkout form-এ coupon input
-         * না থাকায় empty code পাঠানো হচ্ছে।
-         *
-         * ভবিষ্যতে coupon state থাকলে এখানে
-         * সেই validated UI value বসানো যাবে।
+         * Checkout form-এ coupon input না থাকলে
+         * empty coupon code পাঠানো হবে।
          */
         couponCode: "",
 
@@ -603,6 +1248,17 @@ export default function CheckoutClient({
           requestBody,
         );
 
+      let activeOrderAttempt:
+        OrderAttempt | null =
+          null;
+
+      /*
+       * একই submit cycle-এ একই failure-এর জন্য
+       * recovery endpoint বারবার call হবে না।
+       */
+      let recoveryAttempted =
+        false;
+
       try {
         const payloadFingerprint =
           await createPayloadFingerprint(
@@ -614,23 +1270,87 @@ export default function CheckoutClient({
           readStoredOrderAttempt();
 
         /*
-         * একই payload retry হলে একই key reuse হবে।
-         *
-         * Customer address, shipping area, cart,
-         * variation বা quantity পরিবর্তন করলে
-         * fingerprint বদলাবে এবং নতুন key হবে।
+         * Previous unresolved attempt current
+         * payload থেকে আলাদা হলে আগে previous
+         * attempt-এর status check হবে।
          */
         if (
-          !orderAttempt ||
+          orderAttempt &&
           orderAttempt.fingerprint !==
             payloadFingerprint
         ) {
+          recoveryAttempted =
+            true;
+
+          const recoveryResult =
+            await recoverPendingOrder(
+              orderAttempt,
+            );
+
+          if (
+            recoveryResult ===
+            "completed"
+          ) {
+            return;
+          }
+
+          if (
+            recoveryResult ===
+            "in_progress"
+          ) {
+            throw new Error(
+              "A previous order attempt is still being processed. Please wait before placing a different order.",
+            );
+          }
+
+          if (
+            recoveryResult ===
+            "unavailable"
+          ) {
+            throw new Error(
+              "The previous order attempt could not be verified. Check its status before placing a different order.",
+            );
+          }
+
+          /*
+           * Not-found result manually clear করা
+           * ছাড়া different payload submit হবে না।
+           */
+          if (
+            recoveryResult ===
+            "not_found"
+          ) {
+            throw new Error(
+              "A previous order attempt could not be confirmed. Check your order history, then clear the saved attempt before placing a different order.",
+            );
+          }
+
+          /*
+           * Conflict handler attempt ইতোমধ্যে
+           * safely clear করেছে।
+           */
+          orderAttempt =
+            null;
+        }
+
+        if (!orderAttempt) {
           orderAttempt = {
+            version: 1,
+
             key:
               createIdempotencyKey(),
 
             fingerprint:
               payloadFingerprint,
+
+            billingEmail:
+              normalizeRecoveryEmail(
+                customer.email,
+              ),
+
+            createdAt:
+              new Date()
+                .toISOString(),
           };
 
           orderAttemptRef.current =
@@ -639,16 +1359,32 @@ export default function CheckoutClient({
           storeOrderAttempt(
             orderAttempt,
           );
+
+          setHasRecoverableAttempt(
+            true,
+          );
+
+          setAllowAttemptCleanup(
+            false,
+          );
         } else {
           orderAttemptRef.current =
             orderAttempt;
+
+          setHasRecoverableAttempt(
+            true,
+          );
         }
+
+        activeOrderAttempt =
+          orderAttempt;
 
         const response =
           await fetch(
             "/api/orders",
             {
-              method: "POST",
+              method:
+                "POST",
 
               headers: {
                 Accept:
@@ -688,20 +1424,66 @@ export default function CheckoutClient({
 
         if (!response.ok) {
           /*
-           * একই request এখনো process হলে key
-           * রাখা হবে। Retry একই key ব্যবহার করবে।
+           * Order-creation rate limit idempotency
+           * reservation-এর আগেই check হয়েছে।
+           *
+           * তাই current attempt safely clear করে
+           * অপেক্ষার পরে fresh submission হবে।
+           */
+          if (
+            response.status ===
+              429 &&
+            errorCode ===
+              "order_rate_limited"
+          ) {
+            const retryAfter =
+              getRetryAfterSeconds(
+                response,
+                data,
+              );
+
+            clearOrderAttempt();
+
+            activeOrderAttempt =
+              null;
+
+            throw new Error(
+              retryAfter
+                ? `${responseError} Try again in approximately ${retryAfter} seconds.`
+                : responseError,
+            );
+          }
+
+          /*
+           * Same request processing হলে status
+           * endpoint দিয়ে recovery হবে।
            */
           if (
             errorCode ===
             "order_request_in_progress"
           ) {
+            recoveryAttempted =
+              true;
+
+            const recoveryResult =
+              await recoverPendingOrder(
+                orderAttempt,
+              );
+
+            if (
+              recoveryResult ===
+              "completed"
+            ) {
+              return;
+            }
+
             throw new Error(
               responseError,
             );
           }
 
           /*
-           * একই key অন্য payload-এর সঙ্গে
+           * Same key ভিন্ন payload-এর সঙ্গে
            * ব্যবহার হলে fresh attempt প্রয়োজন।
            */
           if (
@@ -710,15 +1492,17 @@ export default function CheckoutClient({
           ) {
             clearOrderAttempt();
 
+            activeOrderAttempt =
+              null;
+
             throw new Error(
               responseError,
             );
           }
 
           /*
-           * Product, stock বা quantity বদলে গেলে
-           * order তৈরি হবে না। Customer cart-এ
-           * ফিরে fresh validation review করবে।
+           * Product, stock অথবা quantity বদলে
+           * গেলে cart page-এ validation review।
            */
           if (
             response.status ===
@@ -732,16 +1516,16 @@ export default function CheckoutClient({
           ) {
             clearOrderAttempt();
 
+            activeOrderAttempt =
+              null;
+
             try {
               sessionStorage.setItem(
                 "checkout-conflict-message",
                 responseError,
               );
             } catch {
-              /*
-               * Storage unavailable হলেও
-               * redirect চলবে।
-               */
+              // Redirect will still continue.
             }
 
             router.push(
@@ -752,12 +1536,34 @@ export default function CheckoutClient({
           }
 
           /*
-           * নিশ্চিত client/validation failure হলে
-           * next submission fresh key পাবে।
+           * Uncertain 5xx response-এর পরে
+           * completed result recovery চেষ্টা।
+           */
+          if (
+            response.status >=
+            500
+          ) {
+            recoveryAttempted =
+              true;
+
+            const recoveryResult =
+              await recoverPendingOrder(
+                orderAttempt,
+              );
+
+            if (
+              recoveryResult ===
+              "completed"
+            ) {
+              return;
+            }
+          }
+
+          /*
+           * নিশ্চিত 4xx validation failure হলে
+           * fresh submission key পাওয়া যাবে।
            *
-           * 5xx বা uncertain server response হলে
-           * key রাখা হবে, কারণ order তৈরি হয়ে
-           * response হারিয়ে যেতে পারে।
+           * 5xx response-এর key রাখা হবে।
            */
           if (
             response.status >=
@@ -766,6 +1572,9 @@ export default function CheckoutClient({
               500
           ) {
             clearOrderAttempt();
+
+            activeOrderAttempt =
+              null;
           }
 
           throw new Error(
@@ -777,9 +1586,8 @@ export default function CheckoutClient({
           !isOrderResult(data)
         ) {
           /*
-           * HTTP success হলেও invalid response
-           * uncertain ধরা হবে। Key রাখা হবে,
-           * যাতে retry duplicate order না করে।
+           * HTTP success হলেও malformed response
+           * uncertain result হিসেবে ধরা হবে।
            */
           throw new Error(
             "The server returned an invalid order response.",
@@ -788,6 +1596,13 @@ export default function CheckoutClient({
 
         clearOrderAttempt();
 
+        activeOrderAttempt =
+          null;
+
+        setRecoveryMessage(
+          "",
+        );
+
         setOrderResult(
           data,
         );
@@ -795,11 +1610,30 @@ export default function CheckoutClient({
         clearCart();
       } catch (error) {
         /*
-         * Network failure বা unknown 5xx-এ
-         * order attempt clear করা হবে না।
-         *
-         * Retry একই key দিয়ে হবে।
+         * Network failure হলেও server order
+         * তৈরি করে থাকতে পারে। Status recovery
+         * দিয়ে result verify করা হবে।
          */
+        if (
+          activeOrderAttempt &&
+          !recoveryAttempted
+        ) {
+          recoveryAttempted =
+            true;
+
+          const recoveryResult =
+            await recoverPendingOrder(
+              activeOrderAttempt,
+            );
+
+          if (
+            recoveryResult ===
+            "completed"
+          ) {
+            return;
+          }
+        }
+
         setErrorMessage(
           error instanceof Error
             ? error.message
@@ -897,7 +1731,15 @@ export default function CheckoutClient({
     );
   }
 
-  if (items.length === 0) {
+  /*
+   * Saved recovery attempt থাকলে empty cart
+   * হলেও recovery controls দেখানো হবে।
+   */
+  if (
+    items.length === 0 &&
+    !recoveringOrder &&
+    !hasRecoverableAttempt
+  ) {
     return (
       <main className="flex min-h-[70vh] items-center justify-center bg-gray-50 px-4">
         <div className="text-center">
@@ -920,6 +1762,17 @@ export default function CheckoutClient({
       </main>
     );
   }
+
+  const checkoutBusy =
+    submitting ||
+    recoveringOrder;
+
+  const submissionBlocked =
+    checkoutBusy ||
+    (
+      hasRecoverableAttempt &&
+      allowAttemptCleanup
+    );
 
   return (
     <main className="min-h-screen bg-gray-50 px-4 py-10 sm:px-6">
@@ -993,7 +1846,10 @@ export default function CheckoutClient({
                   }
                   maxLength={60}
                   autoComplete="given-name"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1016,7 +1872,10 @@ export default function CheckoutClient({
                   }
                   maxLength={60}
                   autoComplete="family-name"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1041,7 +1900,10 @@ export default function CheckoutClient({
                   maxLength={30}
                   autoComplete="tel"
                   placeholder="01XXXXXXXXX"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1050,10 +1912,11 @@ export default function CheckoutClient({
                   htmlFor="email"
                   className="mb-2 block text-sm font-semibold text-gray-800"
                 >
-                  Email
+                  Email *
                 </label>
 
                 <input
+                  required
                   id="email"
                   type="email"
                   name="email"
@@ -1064,7 +1927,10 @@ export default function CheckoutClient({
                   }
                   maxLength={120}
                   autoComplete="email"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1088,7 +1954,10 @@ export default function CheckoutClient({
                   maxLength={300}
                   autoComplete="street-address"
                   placeholder="House, road and area"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1111,7 +1980,10 @@ export default function CheckoutClient({
                   }
                   maxLength={80}
                   autoComplete="address-level2"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1134,7 +2006,10 @@ export default function CheckoutClient({
                   }
                   maxLength={80}
                   autoComplete="address-level1"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1156,7 +2031,10 @@ export default function CheckoutClient({
                   }
                   maxLength={20}
                   autoComplete="postal-code"
-                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="h-12 w-full rounded-lg border border-gray-300 px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
 
@@ -1174,6 +2052,9 @@ export default function CheckoutClient({
                   value={
                     shippingArea
                   }
+                  disabled={
+                    checkoutBusy
+                  }
                   onChange={(
                     event,
                   ) =>
@@ -1184,7 +2065,7 @@ export default function CheckoutClient({
                         | "outside",
                     )
                   }
-                  className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 outline-none transition focus:border-gray-800"
+                  className="h-12 w-full rounded-lg border border-gray-300 bg-white px-4 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 >
                   <option value="dhaka">
                     Inside Dhaka — ৳80
@@ -1210,7 +2091,10 @@ export default function CheckoutClient({
                   rows={4}
                   maxLength={500}
                   placeholder="Optional delivery instructions"
-                  className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none transition focus:border-gray-800"
+                  disabled={
+                    checkoutBusy
+                  }
+                  className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none transition focus:border-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
                 />
               </div>
             </div>
@@ -1222,54 +2106,63 @@ export default function CheckoutClient({
             </h2>
 
             <div className="mt-6 max-h-72 space-y-4 overflow-y-auto">
-              {items.map(
-                (item) => (
-                  <div
-                    key={
-                      item.cartKey
-                    }
-                    className="flex justify-between gap-4 border-b border-gray-100 pb-4 text-sm"
-                  >
-                    <div>
-                      <p className="font-semibold text-gray-900">
-                        {item.name}
-                      </p>
-
-                      {item.attributes
-                        .length >
-                        0 && (
-                        <p className="mt-1 text-gray-500">
-                          {item.attributes
-                            .map(
-                              (
-                                attribute,
-                              ) =>
-                                `${attribute.name}: ${attribute.option}`,
-                            )
-                            .join(
-                              " · ",
-                            )}
+              {items.length === 0 ? (
+                <p className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
+                  The cart is currently
+                  empty. Use the recovery
+                  controls below to check
+                  the saved order attempt.
+                </p>
+              ) : (
+                items.map(
+                  (item) => (
+                    <div
+                      key={
+                        item.cartKey
+                      }
+                      className="flex justify-between gap-4 border-b border-gray-100 pb-4 text-sm"
+                    >
+                      <div>
+                        <p className="font-semibold text-gray-900">
+                          {item.name}
                         </p>
-                      )}
 
-                      <p className="mt-1 text-gray-500">
-                        Quantity:{" "}
-                        {
-                          item.quantity
-                        }
-                      </p>
+                        {item.attributes
+                          .length >
+                          0 && (
+                          <p className="mt-1 text-gray-500">
+                            {item.attributes
+                              .map(
+                                (
+                                  attribute,
+                                ) =>
+                                  `${attribute.name}: ${attribute.option}`,
+                              )
+                              .join(
+                                " · ",
+                              )}
+                          </p>
+                        )}
+
+                        <p className="mt-1 text-gray-500">
+                          Quantity:{" "}
+                          {
+                            item.quantity
+                          }
+                        </p>
+                      </div>
+
+                      <span className="font-semibold text-gray-900">
+                        {formatPrice(
+                          Number(
+                            item.price,
+                          ) *
+                            item.quantity,
+                        )}
+                      </span>
                     </div>
-
-                    <span className="font-semibold text-gray-900">
-                      {formatPrice(
-                        Number(
-                          item.price,
-                        ) *
-                          item.quantity,
-                      )}
-                    </span>
-                  </div>
-                ),
+                  ),
+                )
               )}
             </div>
 
@@ -1324,6 +2217,73 @@ export default function CheckoutClient({
               Delivery
             </div>
 
+            {(
+              recoveryMessage ||
+              hasRecoverableAttempt
+            ) && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="mt-5 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
+              >
+                <p>
+                  {recoveryMessage ||
+                    "A saved order attempt is available for recovery."}
+                </p>
+
+                {hasRecoverableAttempt && (
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      disabled={
+                        checkoutBusy
+                      }
+                      onClick={() => {
+                        void handleManualRecovery();
+                      }}
+                      className="rounded-lg bg-blue-700 px-4 py-2 font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-blue-300"
+                    >
+                      {recoveringOrder
+                        ? "Checking status..."
+                        : "Check order status"}
+                    </button>
+
+                    {allowAttemptCleanup && (
+                      <button
+                        type="button"
+                        disabled={
+                          checkoutBusy
+                        }
+                        onClick={
+                          handleClearStaleAttempt
+                        }
+                        className="rounded-lg border border-blue-300 bg-white px-4 py-2 font-semibold text-blue-800 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Clear stale attempt
+                      </button>
+                    )}
+
+                    <Link
+                      href="/account/orders"
+                      className="rounded-lg border border-blue-300 bg-white px-4 py-2 font-semibold text-blue-800 transition hover:bg-blue-100"
+                    >
+                      View My Orders
+                    </Link>
+                  </div>
+                )}
+
+                {allowAttemptCleanup && (
+                  <p className="mt-3 text-xs leading-5 text-blue-800">
+                    Check your account
+                    order history and
+                    confirmation email
+                    before clearing this
+                    saved attempt.
+                  </p>
+                )}
+              </div>
+            )}
+
             {errorMessage && (
               <div
                 role="alert"
@@ -1339,7 +2299,7 @@ export default function CheckoutClient({
                 type="checkbox"
                 name="termsAccepted"
                 disabled={
-                  submitting
+                  checkoutBusy
                 }
                 className="mt-1 h-4 w-4 rounded border-gray-300"
               />
@@ -1355,28 +2315,32 @@ export default function CheckoutClient({
             <button
               type="submit"
               disabled={
-                submitting
+                submissionBlocked
               }
               aria-busy={
-                submitting
+                checkoutBusy
               }
               className="mt-6 w-full rounded-xl bg-gray-900 px-5 py-4 font-semibold text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
-              {submitting
-                ? "Placing order..."
-                : "Place order"}
+              {recoveringOrder
+                ? "Checking previous order..."
+                : submitting
+                  ? "Placing order..."
+                  : allowAttemptCleanup
+                    ? "Resolve previous attempt first"
+                    : "Place order"}
             </button>
 
             <Link
               href="/cart"
               aria-disabled={
-                submitting
+                checkoutBusy
               }
               onClick={(
                 event,
               ) => {
                 if (
-                  submitting
+                  checkoutBusy
                 ) {
                   event.preventDefault();
                 }
@@ -1389,13 +2353,13 @@ export default function CheckoutClient({
             <Link
               href="/account/addresses"
               aria-disabled={
-                submitting
+                checkoutBusy
               }
               onClick={(
                 event,
               ) => {
                 if (
-                  submitting
+                  checkoutBusy
                 ) {
                   event.preventDefault();
                 }

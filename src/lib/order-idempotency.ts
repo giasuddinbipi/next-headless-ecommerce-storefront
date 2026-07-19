@@ -123,6 +123,25 @@ export type OrderIdempotencyDecision =
         "in_progress";
     };
 
+    export type OrderIdempotencyStatus =
+  | {
+      kind: "not_found";
+    }
+  | {
+      kind: "in_progress";
+
+      createdAt: string;
+    }
+  | {
+      kind: "completed";
+
+      completedAt: string;
+
+      response:
+        OrderIdempotencyCachedResponse;
+    };
+
+
 export class OrderIdempotencyError extends Error {
   status: number;
   code: string;
@@ -879,6 +898,139 @@ export async function reserveOrderIdempotency({
       "The order safety service is temporarily unavailable. Please try again.",
       503,
       "idempotency_store_unavailable",
+    );
+  }
+}
+
+/* =========================================================
+   Read existing idempotency status
+========================================================= */
+
+/*
+ * এই function কোনো reservation তৈরি বা পরিবর্তন করবে না।
+ *
+ * একই scope, key এবং fingerprint দিয়ে existing
+ * order attempt-এর বর্তমান status পড়বে।
+ */
+
+/* =========================================================
+   Read existing idempotency status
+========================================================= */
+
+/*
+ * এই function কোনো reservation তৈরি বা পরিবর্তন করবে না।
+ *
+ * Recovery endpoint শুধু scope + high-entropy
+ * idempotency key দিয়ে status পড়তে পারবে।
+ *
+ * fingerprint দেওয়া হলে অতিরিক্তভাবে সেটিও verify হবে।
+ */
+export async function getOrderIdempotencyStatus({
+  idempotencyKey,
+  scope,
+  fingerprint,
+}: {
+  idempotencyKey: string;
+  scope: string;
+
+  fingerprint?: string;
+}): Promise<OrderIdempotencyStatus> {
+  if (
+    fingerprint !== undefined &&
+    !isSha256Hash(
+      fingerprint,
+    )
+  ) {
+    throw new OrderIdempotencyError(
+      "The order request fingerprint is invalid.",
+      400,
+      "invalid_order_fingerprint",
+    );
+  }
+
+  const storageKey =
+    getStorageKey({
+      scope,
+      idempotencyKey,
+    });
+
+  try {
+    const redis =
+      getRedisClient();
+
+    const existingValue =
+      await redis.get<string>(
+        storageKey,
+      );
+
+    if (!existingValue) {
+      return {
+        kind:
+          "not_found",
+      };
+    }
+
+    const existingRecord =
+      decodeRecord(
+        existingValue,
+      );
+
+    /*
+     * Fingerprint explicitly দেওয়া হলে
+     * stored server fingerprint verify হবে।
+     */
+    if (
+      fingerprint !== undefined &&
+      existingRecord.fingerprint !==
+        fingerprint
+    ) {
+      throw new OrderIdempotencyError(
+        "This idempotency key belongs to a different order request.",
+        409,
+        "idempotency_key_reused",
+      );
+    }
+
+    if (
+      existingRecord.status ===
+      "processing"
+    ) {
+      return {
+        kind:
+          "in_progress",
+
+        createdAt:
+          existingRecord.createdAt,
+      };
+    }
+
+    return {
+      kind:
+        "completed",
+
+      completedAt:
+        existingRecord.completedAt,
+
+      response:
+        existingRecord.response,
+    };
+  } catch (error) {
+    if (
+      error instanceof
+      OrderIdempotencyError
+    ) {
+      throw error;
+    }
+
+    console.error(
+      "Order idempotency status lookup failed:",
+      error,
+    );
+
+    throw new OrderIdempotencyError(
+      "The order status service is temporarily unavailable. Please try again.",
+      503,
+      "idempotency_status_unavailable",
     );
   }
 }

@@ -6,6 +6,11 @@ import {
 import { auth } from "@/auth";
 
 import {
+  checkOrderCreationRateLimit,
+  getCheckoutRateLimitHeaders,
+} from "@/lib/checkout-rate-limit";
+
+import {
   calculateCheckoutTotals,
   CheckoutTotalsError,
   type CheckoutTotalsResult,
@@ -51,8 +56,11 @@ import {
   type WooCommerceOrderAddress,
 } from "@/lib/woocommerce";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const runtime =
+  "nodejs";
+
+export const dynamic =
+  "force-dynamic";
 
 /* =========================================================
    Configuration
@@ -131,7 +139,8 @@ class OrderRequestError extends Error {
   constructor(
     message: string,
     status = 400,
-    code = "invalid_order",
+    code =
+      "invalid_order",
   ) {
     super(message);
 
@@ -151,7 +160,8 @@ function isObject(
   value: unknown,
 ): value is UnknownRecord {
   return (
-    typeof value === "object" &&
+    typeof value ===
+      "object" &&
     value !== null &&
     !Array.isArray(value)
   );
@@ -195,14 +205,17 @@ function readString(
     );
 
   if (
-    typeof value === "string"
+    typeof value ===
+    "string"
   ) {
     return value.trim();
   }
 
   if (
-    typeof value === "number" ||
-    typeof value === "boolean"
+    typeof value ===
+      "number" ||
+    typeof value ===
+      "boolean"
   ) {
     return String(value).trim();
   }
@@ -249,13 +262,15 @@ function readBoolean(
     );
 
   if (
-    typeof value === "boolean"
+    typeof value ===
+    "boolean"
   ) {
     return value;
   }
 
   if (
-    typeof value === "number"
+    typeof value ===
+    "number"
   ) {
     if (value === 1) {
       return true;
@@ -267,7 +282,8 @@ function readBoolean(
   }
 
   if (
-    typeof value === "string"
+    typeof value ===
+    "string"
   ) {
     const normalized =
       value
@@ -280,7 +296,9 @@ function readBoolean(
         "1",
         "yes",
         "on",
-      ].includes(normalized)
+      ].includes(
+        normalized,
+      )
     ) {
       return true;
     }
@@ -291,7 +309,9 @@ function readBoolean(
         "0",
         "no",
         "off",
-      ].includes(normalized)
+      ].includes(
+        normalized,
+      )
     ) {
       return false;
     }
@@ -304,7 +324,10 @@ function normalizeWhitespace(
   value: string,
 ): string {
   return value
-    .replace(/\s+/g, " ")
+    .replace(
+      /\s+/g,
+      " ",
+    )
     .trim();
 }
 
@@ -314,7 +337,10 @@ function normalizeCouponCode(
   return value
     .trim()
     .toLowerCase()
-    .slice(0, 100);
+    .slice(
+      0,
+      100,
+    );
 }
 
 function normalizeCountry(
@@ -336,7 +362,10 @@ function normalizeCountry(
 
   return normalized
     .toUpperCase()
-    .slice(0, 2);
+    .slice(
+      0,
+      2,
+    );
 }
 
 function normalizeAttributeName(
@@ -345,9 +374,18 @@ function normalizeAttributeName(
   return value
     .trim()
     .toLowerCase()
-    .replace(/^attribute_/, "")
-    .replace(/^pa_/, "")
-    .replace(/[\s_-]+/g, "");
+    .replace(
+      /^attribute_/,
+      "",
+    )
+    .replace(
+      /^pa_/,
+      "",
+    )
+    .replace(
+      /[\s_-]+/g,
+      "",
+    );
 }
 
 function normalizeAttributeOption(
@@ -356,17 +394,22 @@ function normalizeAttributeOption(
   return value
     .trim()
     .toLowerCase()
-    .replace(/\s+/g, " ");
+    .replace(
+      /\s+/g,
+      " ",
+    );
 }
 
 function formatMoney(
   value: number,
 ): string {
-  return value.toFixed(2);
+  return value.toFixed(
+    2,
+  );
 }
 
 /* =========================================================
-   Response headers
+   Base response headers
 ========================================================= */
 
 function getOrderResponseHeaders({
@@ -410,7 +453,9 @@ function addAllowedOrigin(
       normalized.includes(
         "://",
       )
-        ? new URL(normalized)
+        ? new URL(
+            normalized,
+          )
         : new URL(
             `https://${normalized}`,
           );
@@ -550,7 +595,9 @@ async function parseRequestBody(
     );
   }
 
-  if (!rawBody.trim()) {
+  if (
+    !rawBody.trim()
+  ) {
     throw new OrderRequestError(
       "The order request is empty.",
       400,
@@ -611,7 +658,9 @@ function normalizeAddress(
       normalizeWhitespace(
         readString(
           source,
-          ["company"],
+          [
+            "company",
+          ],
           fallback?.company,
         ),
       ),
@@ -690,7 +739,9 @@ function normalizeAddress(
       normalizeCountry(
         readString(
           source,
-          ["country"],
+          [
+            "country",
+          ],
           fallback?.country ||
             "BD",
         ),
@@ -699,7 +750,9 @@ function normalizeAddress(
     email:
       readString(
         source,
-        ["email"],
+        [
+          "email",
+        ],
         fallback?.email,
       )
         .trim()
@@ -745,11 +798,14 @@ function validateAddress(
     | "shipping",
 ): void {
   const label =
-    type === "billing"
+    type ===
+    "billing"
       ? "Billing"
       : "Shipping";
 
-  if (!address.first_name) {
+  if (
+    !address.first_name
+  ) {
     throw new OrderRequestError(
       `${label} first name is required.`,
       400,
@@ -757,7 +813,9 @@ function validateAddress(
     );
   }
 
-  if (!address.last_name) {
+  if (
+    !address.last_name
+  ) {
     throw new OrderRequestError(
       `${label} last name is required.`,
       400,
@@ -765,7 +823,9 @@ function validateAddress(
     );
   }
 
-  if (!address.address_1) {
+  if (
+    !address.address_1
+  ) {
     throw new OrderRequestError(
       `${label} address is required.`,
       400,
@@ -773,7 +833,9 @@ function validateAddress(
     );
   }
 
-  if (!address.city) {
+  if (
+    !address.city
+  ) {
     throw new OrderRequestError(
       `${label} city or upazila is required.`,
       400,
@@ -781,7 +843,9 @@ function validateAddress(
     );
   }
 
-  if (!address.state) {
+  if (
+    !address.state
+  ) {
     throw new OrderRequestError(
       `${label} district is required.`,
       400,
@@ -850,7 +914,8 @@ function validateAddress(
   );
 
   if (
-    type === "billing"
+    type ===
+    "billing"
   ) {
     const email =
       address.email ?? "";
@@ -922,13 +987,22 @@ function normalizeCartAttributes(
   const attributes:
     CartAttribute[] = [];
 
-  if (Array.isArray(value)) {
+  if (
+    Array.isArray(
+      value,
+    )
+  ) {
     for (
       const entry of
-      value.slice(0, 30)
+      value.slice(
+        0,
+        30,
+      )
     ) {
       const record =
-        getRecord(entry);
+        getRecord(
+          entry,
+        );
 
       if (!record) {
         continue;
@@ -968,14 +1042,22 @@ function normalizeCartAttributes(
 
       attributes.push({
         name:
-          name.slice(0, 150),
+          name.slice(
+            0,
+            150,
+          ),
 
         option:
-          option.slice(0, 250),
+          option.slice(
+            0,
+            250,
+          ),
       });
     }
   } else if (
-    isObject(value)
+    isObject(
+      value,
+    )
   ) {
     for (
       const [
@@ -1008,10 +1090,16 @@ function normalizeCartAttributes(
       ) {
         attributes.push({
           name:
-            name.slice(0, 150),
+            name.slice(
+              0,
+              150,
+            ),
 
           option:
-            option.slice(0, 250),
+            option.slice(
+              0,
+              250,
+            ),
         });
       }
     }
@@ -1044,14 +1132,19 @@ function normalizeCartAttributes(
 
   return Array.from(
     uniqueAttributes.values(),
-  ).slice(0, 20);
+  ).slice(
+    0,
+    20,
+  );
 }
 
 function normalizeCartItem(
   value: unknown,
 ): NormalizedCartItem | null {
   const record =
-    getRecord(value);
+    getRecord(
+      value,
+    );
 
   if (!record) {
     return null;
@@ -1164,17 +1257,19 @@ function getCartItemKey(
 ): string {
   const attributesKey =
     item.attributes
-      .map((attribute) => ({
-        name:
-          normalizeAttributeName(
-            attribute.name,
-          ),
+      .map(
+        (attribute) => ({
+          name:
+            normalizeAttributeName(
+              attribute.name,
+            ),
 
-        option:
-          normalizeAttributeOption(
-            attribute.option,
-          ),
-      }))
+          option:
+            normalizeAttributeOption(
+              attribute.option,
+            ),
+        }),
+      )
       .sort(
         (
           first,
@@ -1219,12 +1314,19 @@ function mergeDuplicateCartItems(
       NormalizedCartItem
     >();
 
-  for (const item of items) {
+  for (
+    const item of
+    items
+  ) {
     const key =
-      getCartItemKey(item);
+      getCartItemKey(
+        item,
+      );
 
     const existing =
-      mergedItems.get(key);
+      mergedItems.get(
+        key,
+      );
 
     if (!existing) {
       mergedItems.set(
@@ -1233,7 +1335,9 @@ function mergeDuplicateCartItems(
           ...item,
 
           attributes:
-            [...item.attributes],
+            [
+              ...item.attributes,
+            ],
         },
       );
 
@@ -1265,7 +1369,7 @@ function mergeDuplicateCartItems(
 }
 
 /* =========================================================
-   Full order request normalization
+   Full request normalization
 ========================================================= */
 
 function normalizeShippingArea(
@@ -1283,7 +1387,9 @@ function normalizeOrderRequest(
   value: unknown,
 ): NormalizedOrderRequest {
   const body =
-    getRecord(value);
+    getRecord(
+      value,
+    );
 
   if (!body) {
     throw new OrderRequestError(
@@ -1296,7 +1402,9 @@ function normalizeOrderRequest(
   const website =
     readString(
       body,
-      ["website"],
+      [
+        "website",
+      ],
     );
 
   if (website) {
@@ -1467,7 +1575,10 @@ function normalizeOrderRequest(
 
   const totalQuantity =
     items.reduce(
-      (total, item) =>
+      (
+        total,
+        item,
+      ) =>
         total +
         item.quantity,
       0,
@@ -1587,7 +1698,9 @@ async function validateOrderCoupon({
       ?.trim()
       .toLowerCase() || "";
 
-  if (customerId > 0) {
+  if (
+    customerId > 0
+  ) {
     try {
       const customer =
         await getCustomerProfile(
@@ -1680,7 +1793,9 @@ function parseShippingFee(
   fallback: number,
 ): number {
   const parsed =
-    Number(value);
+    Number(
+      value,
+    );
 
   if (
     !Number.isFinite(
@@ -1707,7 +1822,8 @@ function getShippingConfiguration(
       .STORE_SHIPPING_FEE;
 
   const shippingFee =
-    shippingArea === "dhaka"
+    shippingArea ===
+    "dhaka"
       ? parseShippingFee(
           process.env
             .STORE_SHIPPING_FEE_DHAKA ??
@@ -1728,7 +1844,8 @@ function getShippingConfiguration(
     "flat_rate";
 
   const defaultTitle =
-    shippingArea === "dhaka"
+    shippingArea ===
+    "dhaka"
       ? "Inside Dhaka delivery"
       : "Outside Dhaka delivery";
 
@@ -1750,7 +1867,7 @@ function getShippingConfiguration(
 }
 
 /* =========================================================
-   Trusted WooCommerce order lines
+   Trusted WooCommerce lines
 ========================================================= */
 
 function buildTrustedOrderLines(
@@ -1808,16 +1925,36 @@ export async function POST(
 
   /*
    * WooCommerce request শুরু হয়ে গেলে
-   * reservation release করা হবে না।
-   *
-   * Error হলেও order তৈরি হয়ে থাকতে পারে।
+   * reservation আর release করা যাবে না।
    */
   let orderCreationStarted =
     false;
 
+  /*
+   * Rate-limit check হওয়ার আগে এটি empty।
+   * Check হওয়ার পরে success/error response-এ
+   * rate-limit metadata যোগ হবে।
+   */
+  let rateLimitHeaders:
+    Record<string, string> = {};
+
+  const buildOrderResponseHeaders = ({
+    replayed = false,
+  }: {
+    replayed?: boolean;
+  } = {}): Record<string, string> => ({
+    ...getOrderResponseHeaders({
+      replayed,
+    }),
+
+    ...rateLimitHeaders,
+  });
+
   try {
     if (
-      !isSameOrigin(request)
+      !isSameOrigin(
+        request,
+      )
     ) {
       throw new OrderRequestError(
         "The order request was rejected.",
@@ -1859,9 +1996,57 @@ export async function POST(
         : 0;
 
     /*
-     * Stable server-side request fingerprint।
-     *
-     * Browser-generated fingerprint trusted নয়।
+     * Authenticated customer-এর ক্ষেত্রে
+     * customer ID, guest-এর ক্ষেত্রে billing
+     * email এবং সব ক্ষেত্রে IP rate limited।
+     */
+    const rateLimitResult =
+      await checkOrderCreationRateLimit({
+        request,
+
+        customerId,
+
+        billingEmail:
+          normalizedRequest
+            .billing.email,
+      });
+
+    rateLimitHeaders =
+      getCheckoutRateLimitHeaders(
+        rateLimitResult,
+      );
+
+    if (
+      !rateLimitResult.allowed
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+
+          error:
+            "Too many order requests were received. Please wait before trying again.",
+
+          code:
+            "order_rate_limited",
+
+          retryAfter:
+            rateLimitResult
+              .retryAfterSeconds,
+        },
+
+        {
+          status: 429,
+
+          headers:
+            buildOrderResponseHeaders(),
+        },
+      );
+    }
+
+    /*
+     * Browser fingerprint trusted নয়।
+     * Normalized request দিয়ে server-side
+     * deterministic fingerprint তৈরি হবে।
      */
     const requestFingerprint =
       createOrderRequestFingerprint({
@@ -1904,7 +2089,7 @@ export async function POST(
       });
 
     /*
-     * Shipping fee browser থেকে নেওয়া হয় না।
+     * Shipping fee browser থেকে trusted নয়।
      */
     const shipping =
       getShippingConfiguration(
@@ -1913,14 +2098,13 @@ export async function POST(
       );
 
     /*
-     * Current catalogue, variation, stock,
-     * quantity এবং price validation।
+     * Current catalogue, variation, quantity,
+     * stock এবং price server-side verify হবে।
      */
     const secureCheckout =
       await prepareSecureCheckout({
         items:
-          normalizedRequest
-            .items,
+          normalizedRequest.items,
 
         shippingArea:
           normalizedRequest
@@ -1944,10 +2128,6 @@ export async function POST(
       );
     }
 
-    /*
-     * Coupon order creation-এর সময়
-     * আবার server-side validate হবে।
-     */
     const validatedCoupon =
       await validateOrderCoupon({
         couponCode:
@@ -1961,7 +2141,8 @@ export async function POST(
         customerId,
 
         sessionEmail:
-          session?.user?.email,
+          session?.user
+            ?.email,
 
         items:
           secureCheckout.items.map(
@@ -2165,7 +2346,9 @@ export async function POST(
               value:
                 validatedCoupon
                   .discount
-                  .toFixed(2),
+                  .toFixed(
+                    2,
+                  ),
             },
           ]
         : []),
@@ -2186,7 +2369,8 @@ export async function POST(
       payment_method_title:
         "Cash on delivery",
 
-      set_paid: false,
+      set_paid:
+        false,
 
       billing:
         normalizedRequest
@@ -2239,9 +2423,8 @@ export async function POST(
     };
 
     /*
-     * সব validation সফল হওয়ার পরে এবং
-     * WooCommerce request-এর ঠিক আগে
-     * atomic reservation নেওয়া হচ্ছে।
+     * WooCommerce request-এর ঠিক আগে atomic
+     * Redis idempotency reservation।
      */
     const idempotencyDecision =
       await reserveOrderIdempotency({
@@ -2254,6 +2437,10 @@ export async function POST(
           requestFingerprint,
       });
 
+    /*
+     * একই order request আগে completed হলে
+     * নতুন order নয়—cached response replay।
+     */
     if (
       idempotencyDecision.kind ===
       "replay"
@@ -2273,13 +2460,16 @@ export async function POST(
               .response.status,
 
           headers:
-            getOrderResponseHeaders({
+            buildOrderResponseHeaders({
               replayed: true,
             }),
         },
       );
     }
 
+    /*
+     * Same key request এখনো processing।
+     */
     if (
       idempotencyDecision.kind ===
       "in_progress"
@@ -2299,7 +2489,7 @@ export async function POST(
           status: 409,
 
           headers: {
-            ...getOrderResponseHeaders(),
+            ...buildOrderResponseHeaders(),
 
             "Retry-After":
               "2",
@@ -2316,8 +2506,8 @@ export async function POST(
       activeReservation;
 
     /*
-     * এই point-এর পরে result uncertain হলে
-     * reservation release করা হবে না।
+     * এই point-এর পর failure হলে WooCommerce
+     * order তৈরি হয়েছে কি না uncertain হতে পারে।
      */
     orderCreationStarted =
       true;
@@ -2328,8 +2518,8 @@ export async function POST(
       );
 
     /*
-     * WooCommerce-created total এবং
-     * server-calculated total compare।
+     * Created WooCommerce totals বনাম
+     * trusted server totals compare।
      */
     const expectedTotal =
       Number(
@@ -2395,7 +2585,9 @@ export async function POST(
           createdShipping,
       ) <= 0.01;
 
-    if (!totalsVerified) {
+    if (
+      !totalsVerified
+    ) {
       console.error(
         "Created order totals differ from server calculation:",
         {
@@ -2442,8 +2634,8 @@ export async function POST(
     }
 
     /*
-     * Email failure হলেও successful order
-     * response ব্যর্থ করা হবে না।
+     * Email failure successful order response-কে
+     * failure বানাবে না।
      */
     let confirmationEmailSent =
       false;
@@ -2547,7 +2739,9 @@ export async function POST(
                   .discount_total ??
                 validatedCoupon
                   .discount
-                  .toFixed(2),
+                  .toFixed(
+                    2,
+                  ),
 
               freeShipping:
                 validatedCoupon
@@ -2584,7 +2778,8 @@ export async function POST(
     };
 
     /*
-     * Successful response Redis-এ cache।
+     * Successful response Redis-এ store হবে।
+     * Retry হলে same order result replay হবে।
      */
     try {
       await completeOrderIdempotency({
@@ -2600,9 +2795,9 @@ export async function POST(
       });
     } catch (completionError) {
       /*
-       * Order ইতোমধ্যে তৈরি হয়েছে।
-       * Redis failure-এর কারণে order failure
-       * response দেওয়া হবে না।
+       * Order ইতোমধ্যে তৈরি হয়েছে। Redis
+       * completion failure-এর জন্য customer-কে
+       * order failure দেখানো যাবে না।
        */
       successResponseBody
         .idempotencyStored =
@@ -2632,13 +2827,14 @@ export async function POST(
         status: 201,
 
         headers:
-          getOrderResponseHeaders(),
+          buildOrderResponseHeaders(),
       },
     );
   } catch (error) {
     /*
-     * Reservation acquired হলেও WooCommerce
-     * request শুরু না হলে safe release।
+     * Reservation নেওয়া হয়েছে কিন্তু
+     * WooCommerce request শুরু হয়নি—
+     * শুধু তখনই reservation release নিরাপদ।
      */
     if (
       idempotencyReservation &&
@@ -2676,7 +2872,7 @@ export async function POST(
             error.status,
 
           headers:
-            getOrderResponseHeaders(),
+            buildOrderResponseHeaders(),
         },
       );
     }
@@ -2708,7 +2904,7 @@ export async function POST(
             error.status,
 
           headers:
-            getOrderResponseHeaders(),
+            buildOrderResponseHeaders(),
         },
       );
     }
@@ -2733,7 +2929,7 @@ export async function POST(
             error.status,
 
           headers:
-            getOrderResponseHeaders(),
+            buildOrderResponseHeaders(),
         },
       );
     }
@@ -2767,7 +2963,7 @@ export async function POST(
         status: 502,
 
         headers:
-          getOrderResponseHeaders(),
+          buildOrderResponseHeaders(),
       },
     );
   }
