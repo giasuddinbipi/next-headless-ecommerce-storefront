@@ -13,7 +13,8 @@
     "test:security": "vitest run tests/security",
     "test:coverage": "vitest run --coverage",
     "test:security:coverage": "vitest run tests/security --coverage",
-    "test:verify": "npm run test:security:coverage && npm run build"
+    "test:verify": "npm run test:security:coverage && npm run build",
+    "health:verify": "node scripts/verify-checkout-health.mjs"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",

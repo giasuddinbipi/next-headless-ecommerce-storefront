@@ -124,18 +124,27 @@ export default defineConfig({
        * report-এর অংশ হয়।
        */
       include: [
-        "src/app/api/orders/route.ts",
+  "src/app/api/orders/route.ts",
 
-        "src/app/api/orders/idempotency-status/route.ts",
+  "src/app/api/orders/idempotency-status/route.ts",
 
-        "src/components/checkout/CheckoutClient.tsx",
+  "src/app/api/health/checkout/route.ts",
 
-        "src/lib/order-idempotency.ts",
+  "src/app/api/health/live/route.ts",
 
-        "src/lib/checkout-rate-limit.ts",
+  "src/components/checkout/CheckoutClient.tsx",
 
-        "src/lib/request-audit.ts",
-      ],
+  "src/lib/order-idempotency.ts",
+
+  "src/lib/checkout-rate-limit.ts",
+
+  "src/lib/request-audit.ts",
+
+  "src/lib/health-check.ts",
+
+  "src/lib/health-dependencies.ts",
+  "src/lib/health-monitoring.ts",
+],
 
       exclude: [
         "**/*.d.ts",

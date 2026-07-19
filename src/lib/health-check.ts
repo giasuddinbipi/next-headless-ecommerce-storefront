@@ -94,8 +94,20 @@ export type DependencyHealthCheckOptions = {
 const DEFAULT_TIMEOUT_MS =
   1_500;
 
-const MAX_TIMEOUT_MS =
+const MINIMUM_TIMEOUT_MS =
+  100;
+
+const MAXIMUM_TIMEOUT_MS =
   10_000;
+
+const MAXIMUM_PUBLIC_TEXT_LENGTH =
+  240;
+
+const MAXIMUM_ENVIRONMENT_LENGTH =
+  40;
+
+const RELEASE_REFERENCE_LENGTH =
+  12;
 
 const DEFAULT_SUCCESS_MESSAGE =
   "Dependency is available.";
@@ -170,9 +182,9 @@ function normalizeTimeout(
       Math.trunc(
         timeoutMs,
       ),
-      100,
+      MINIMUM_TIMEOUT_MS,
     ),
-    MAX_TIMEOUT_MS,
+    MAXIMUM_TIMEOUT_MS,
   );
 }
 
@@ -189,46 +201,70 @@ function calculateLatency(
   );
 }
 
+/*
+ * Empty environment variables are ignored.
+ *
+ * This is important because:
+ *
+ * process.env.VALUE ?? fallback
+ *
+ * does not use the fallback when VALUE is an
+ * empty string.
+ */
+function readFirstNonEmptyEnvironmentValue(
+  names:
+    string[],
+): string | null {
+  for (
+    const name of names
+  ) {
+    const value =
+      process.env[
+        name
+      ]?.trim();
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
 function normalizeEnvironment():
   string {
   const environment =
-    process.env
-      .VERCEL_ENV ??
-    process.env
-      .NODE_ENV ??
+    readFirstNonEmptyEnvironmentValue([
+      "VERCEL_ENV",
+      "NODE_ENV",
+    ]) ??
     "unknown";
 
-  return environment
-    .trim()
-    .slice(
-      0,
-      40,
-    );
+  return environment.slice(
+    0,
+    MAXIMUM_ENVIRONMENT_LENGTH,
+  );
 }
 
 function normalizeRelease():
   string | null {
   const release =
-    process.env
-      .APP_RELEASE ??
-    process.env
-      .VERCEL_GIT_COMMIT_SHA ??
-    "";
+    readFirstNonEmptyEnvironmentValue([
+      "APP_RELEASE",
+      "VERCEL_GIT_COMMIT_SHA",
+    ]);
 
-  const normalized =
-    release.trim();
-
-  if (!normalized) {
+  if (!release) {
     return null;
   }
 
   /*
-   * Full deployment identifiers public response-এ
+   * Full deployment identifier public response-এ
    * প্রকাশ না করে short operational reference।
    */
-  return normalized.slice(
+  return release.slice(
     0,
-    12,
+    RELEASE_REFERENCE_LENGTH,
   );
 }
 
@@ -257,7 +293,7 @@ function sanitizePublicText(
 
   return normalized.slice(
     0,
-    240,
+    MAXIMUM_PUBLIC_TEXT_LENGTH,
   );
 }
 
@@ -289,8 +325,8 @@ function getSafeFailureDetails(
 
   /*
    * Unknown error-এর raw message, stack,
-   * URL, token বা provider response প্রকাশ
-   * করা হবে না।
+   * URL, credential, token অথবা provider
+   * response প্রকাশ করা হবে না।
    */
   return {
     code:
