@@ -500,7 +500,7 @@ export async function runCheckoutDependencyHealthChecks():
           true,
 
         timeoutMs:
-          3_000,
+          8_000,
 
         check:
           checkWooCommerceDependency,
