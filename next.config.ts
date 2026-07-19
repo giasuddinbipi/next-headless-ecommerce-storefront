@@ -7,17 +7,21 @@ import {
 } from "./src/lib/browser-security-headers";
 
 import {
-  DEFAULT_CSP_REPORT_TO_GROUP,
-  DEFAULT_CSP_REPORT_URI,
-  getContentSecurityPolicyReportOnlyHeader,
-  getReportingEndpointsHeader,
-} from "./src/lib/content-security-policy";
+  getCspDeploymentHeaders,
+} from "./src/lib/csp-deployment";
 
 const nextConfig:
   NextConfig = {
+  /*
+   * Prevent framework disclosure through:
+   * X-Powered-By: Next.js
+   */
   poweredByHeader:
     false,
 
+  /*
+   * Allow WooCommerce media hosted by the CMS.
+   */
   images: {
     remotePatterns: [
       {
@@ -36,6 +40,10 @@ const nextConfig:
     ],
   },
 
+  /*
+   * Apply browser security headers and the selected CSP
+   * deployment mode to all storefront and API routes.
+   */
   async headers() {
     const isProduction =
       process.env.NODE_ENV ===
@@ -51,22 +59,12 @@ const nextConfig:
             isProduction,
           }),
 
-          getContentSecurityPolicyReportOnlyHeader({
+          ...getCspDeploymentHeaders({
+            mode:
+              process.env
+                .CSP_DEPLOYMENT_MODE,
+
             isProduction,
-
-            reportUri:
-              DEFAULT_CSP_REPORT_URI,
-
-            reportTo:
-              DEFAULT_CSP_REPORT_TO_GROUP,
-          }),
-
-          getReportingEndpointsHeader({
-            group:
-              DEFAULT_CSP_REPORT_TO_GROUP,
-
-            endpoint:
-              DEFAULT_CSP_REPORT_URI,
           }),
         ],
       },
