@@ -1,15 +1,18 @@
-import {
-  Buffer,
-} from "node:buffer";
-
-import {
-  randomUUID,
-} from "node:crypto";
+import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 
 import {
   NextRequest,
   NextResponse,
 } from "next/server";
+
+import {
+  checkCspReportDuplicate,
+  checkCspReportRateLimit,
+  getCspReportRateLimitHeaders,
+  type CspReportDuplicateResult,
+  type CspReportRateLimitResult,
+} from "@/lib/csp-report-protection";
 
 import {
   analyzeCspViolation,
@@ -20,14 +23,9 @@ import {
    Route configuration
 ========================================================= */
 
-export const runtime =
-  "nodejs";
-
-export const dynamic =
-  "force-dynamic";
-
-export const revalidate =
-  0;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 /* =========================================================
    Types
@@ -36,36 +34,29 @@ export const revalidate =
 type UnknownRecord =
   Record<string, unknown>;
 
+type ResponseHeaderRecord =
+  Record<string, string>;
+
 type SafeCspReport = {
-  documentOrigin:
-    string | null;
-
-  blockedOrigin:
-    string | null;
-
-  sourceOrigin:
-    string | null;
-
-  effectiveDirective:
-    string | null;
-
-  violatedDirective:
-    string | null;
-
-  disposition:
-    string | null;
-
-  statusCode:
-    number | null;
+  documentOrigin: string | null;
+  blockedOrigin: string | null;
+  sourceOrigin: string | null;
+  effectiveDirective: string | null;
+  violatedDirective: string | null;
+  disposition: string | null;
+  statusCode: number | null;
 };
 
 type AnalyzedCspReport = {
-  report:
-    SafeCspReport;
-
-  analysis:
-    CspViolationAnalysis;
+  report: SafeCspReport;
+  analysis: CspViolationAnalysis;
 };
+
+type ProtectedCspReport =
+  AnalyzedCspReport & {
+    duplicateProtection:
+      CspReportDuplicateResult;
+  };
 
 /* =========================================================
    Constants
@@ -109,27 +100,19 @@ const BASE_RESPONSE_HEADERS = {
 ========================================================= */
 
 function isRecord(
-  value:
-    unknown,
+  value: unknown,
 ): value is UnknownRecord {
   return (
-    typeof value ===
-      "object" &&
+    typeof value === "object" &&
     value !== null &&
-    !Array.isArray(
-      value,
-    )
+    !Array.isArray(value)
   );
 }
 
 function sanitizeText(
-  value:
-    unknown,
+  value: unknown,
 ): string | null {
-  if (
-    typeof value !==
-    "string"
-  ) {
+  if (typeof value !== "string") {
     return null;
   }
 
@@ -156,15 +139,10 @@ function sanitizeText(
 }
 
 function readFirstString(
-  record:
-    UnknownRecord,
-
-  names:
-    string[],
+  record: UnknownRecord,
+  names: string[],
 ): string | null {
-  for (
-    const name of names
-  ) {
+  for (const name of names) {
     const value =
       sanitizeText(
         record[name],
@@ -179,39 +157,26 @@ function readFirstString(
 }
 
 function readFirstNumber(
-  record:
-    UnknownRecord,
-
-  names:
-    string[],
+  record: UnknownRecord,
+  names: string[],
 ): number | null {
-  for (
-    const name of names
-  ) {
+  for (const name of names) {
     const value =
       record[name];
 
     if (
-      typeof value ===
-        "number" &&
-      Number.isFinite(
-        value,
-      )
+      typeof value === "number" &&
+      Number.isFinite(value)
     ) {
       return Math.max(
         0,
-        Math.trunc(
-          value,
-        ),
+        Math.trunc(value),
       );
     }
 
     if (
-      typeof value ===
-        "string" &&
-      /^\d+$/.test(
-        value,
-      )
+      typeof value === "string" &&
+      /^\d+$/.test(value)
     ) {
       return Math.max(
         0,
@@ -231,8 +196,7 @@ function readFirstNumber(
 ========================================================= */
 
 function sanitizeUrlForAudit(
-  value:
-    string | null,
+  value: string | null,
 ): string | null {
   if (!value) {
     return null;
@@ -251,22 +215,15 @@ function sanitizeUrlForAudit(
   }
 
   const lowerValue =
-    normalized
-      .toLowerCase();
+    normalized.toLowerCase();
 
   if (
-    lowerValue ===
-      "inline" ||
-    lowerValue ===
-      "eval" ||
-    lowerValue ===
-      "self" ||
-    lowerValue ===
-      "'self'" ||
-    lowerValue ===
-      "none" ||
-    lowerValue ===
-      "'none'"
+    lowerValue === "inline" ||
+    lowerValue === "eval" ||
+    lowerValue === "self" ||
+    lowerValue === "'self'" ||
+    lowerValue === "none" ||
+    lowerValue === "'none'"
   ) {
     return lowerValue;
   }
@@ -305,25 +262,22 @@ function sanitizeUrlForAudit(
 
   try {
     const url =
-      new URL(
-        normalized,
-      );
+      new URL(normalized);
 
     if (
-      url.protocol ===
-        "http:" ||
-      url.protocol ===
-        "https:"
+      url.protocol === "http:" ||
+      url.protocol === "https:"
     ) {
       /*
-       * Path, query এবং fragment audit log-এ রাখা হবে না।
+       * Path, query এবং fragment audit log-এ
+       * রাখা হবে না।
        */
       return url.origin;
     }
 
     /*
-     * Browser-extension অথবা অন্য protocol-এর
-     * সম্পূর্ণ URL নয়, শুধু protocol রাখা হবে।
+     * Extension বা custom protocol-এর ক্ষেত্রে
+     * শুধু protocol রাখা হবে।
      */
     return url.protocol;
   } catch {
@@ -336,17 +290,14 @@ function sanitizeUrlForAudit(
 ========================================================= */
 
 function resolveReportBody(
-  value:
-    unknown,
+  value: unknown,
 ): UnknownRecord | null {
   if (!isRecord(value)) {
     return null;
   }
 
   const legacyReport =
-    value[
-      "csp-report"
-    ];
+    value["csp-report"];
 
   if (
     isRecord(
@@ -371,8 +322,7 @@ function resolveReportBody(
 }
 
 function normalizeCspReport(
-  value:
-    unknown,
+  value: unknown,
 ): SafeCspReport | null {
   const report =
     resolveReportBody(
@@ -474,45 +424,31 @@ function normalizeCspReport(
       ),
 
     effectiveDirective,
-
     violatedDirective,
-
     disposition,
-
     statusCode,
   };
 }
 
 function extractCspReports(
-  payload:
-    unknown,
+  payload: unknown,
 ): SafeCspReport[] {
   const candidates =
-    Array.isArray(
-      payload,
-    )
+    Array.isArray(payload)
       ? payload
-      : [
-          payload,
-        ];
+      : [payload];
 
   const reports:
-    SafeCspReport[] =
-    [];
+    SafeCspReport[] = [];
 
-  for (
-    const candidate of
-    candidates
-  ) {
+  for (const candidate of candidates) {
     const report =
       normalizeCspReport(
         candidate,
       );
 
     if (report) {
-      reports.push(
-        report,
-      );
+      reports.push(report);
     }
   }
 
@@ -520,13 +456,10 @@ function extractCspReports(
 }
 
 function analyzeReports(
-  reports:
-    SafeCspReport[],
+  reports: SafeCspReport[],
 ): AnalyzedCspReport[] {
   return reports.map(
-    (
-      report,
-    ) => ({
+    (report) => ({
       report,
 
       analysis:
@@ -537,13 +470,36 @@ function analyzeReports(
   );
 }
 
+async function applyDuplicateProtection(
+  reports:
+    AnalyzedCspReport[],
+): Promise<
+  ProtectedCspReport[]
+> {
+  return Promise.all(
+    reports.map(
+      async (
+        analyzedReport,
+      ) => ({
+        ...analyzedReport,
+
+        duplicateProtection:
+          await checkCspReportDuplicate(
+            analyzedReport
+              .analysis
+              .fingerprint,
+          ),
+      }),
+    ),
+  );
+}
+
 /* =========================================================
    Request validation
 ========================================================= */
 
 function readMediaType(
-  request:
-    NextRequest,
+  request: NextRequest,
 ): string {
   return (
     request.headers
@@ -560,8 +516,7 @@ function readMediaType(
 }
 
 function isContentLengthTooLarge(
-  request:
-    NextRequest,
+  request: NextRequest,
 ): boolean {
   const rawValue =
     request.headers.get(
@@ -596,18 +551,14 @@ function createErrorResponse({
   code,
   message,
   requestId,
+  additionalHeaders = {},
 }: {
-  status:
-    number;
-
-  code:
-    string;
-
-  message:
-    string;
-
-  requestId:
-    string;
+  status: number;
+  code: string;
+  message: string;
+  requestId: string;
+  additionalHeaders?:
+    ResponseHeaderRecord;
 }): NextResponse {
   return NextResponse.json(
     {
@@ -623,6 +574,7 @@ function createErrorResponse({
 
       headers: {
         ...BASE_RESPONSE_HEADERS,
+        ...additionalHeaders,
 
         "X-Request-Id":
           requestId,
@@ -633,33 +585,62 @@ function createErrorResponse({
 
 function createAcceptedResponse({
   requestId,
-  acceptedReports,
-  actionableReports,
+  protectedReports,
+  rateLimitResult,
 }: {
-  requestId:
-    string;
+  requestId: string;
 
-  acceptedReports:
-    number;
+  protectedReports:
+    ProtectedCspReport[];
 
-  actionableReports:
-    number;
+  rateLimitResult:
+    CspReportRateLimitResult;
 }): NextResponse {
+  const acceptedReports =
+    protectedReports.length;
+
+  const actionableReports =
+    protectedReports.filter(
+      (item) =>
+        item.analysis
+          .actionable,
+    ).length;
+
   const noiseReports =
-    Math.max(
-      0,
-      acceptedReports -
-        actionableReports,
+    acceptedReports -
+    actionableReports;
+
+  const duplicateReports =
+    protectedReports.filter(
+      (item) =>
+        item
+          .duplicateProtection
+          .duplicate,
+    ).length;
+
+  const loggedReports =
+    acceptedReports -
+    duplicateReports;
+
+  const duplicateProtectionDegraded =
+    protectedReports.some(
+      (item) =>
+        item
+          .duplicateProtection
+          .degraded,
     );
 
   return new NextResponse(
     null,
     {
-      status:
-        204,
+      status: 204,
 
       headers: {
         ...BASE_RESPONSE_HEADERS,
+
+        ...getCspReportRateLimitHeaders(
+          rateLimitResult,
+        ),
 
         "X-Request-Id":
           requestId,
@@ -678,6 +659,21 @@ function createAcceptedResponse({
           String(
             noiseReports,
           ),
+
+        "X-CSP-Duplicate-Reports":
+          String(
+            duplicateReports,
+          ),
+
+        "X-CSP-Logged-Reports":
+          String(
+            loggedReports,
+          ),
+
+        "X-CSP-Duplicate-Protection-Degraded":
+          String(
+            duplicateProtectionDegraded,
+          ),
       },
     },
   );
@@ -689,13 +685,12 @@ function createAcceptedResponse({
 
 function createCspAuditEntry({
   requestId,
-  analyzedReport,
+  protectedReport,
 }: {
-  requestId:
-    string;
+  requestId: string;
 
-  analyzedReport:
-    AnalyzedCspReport;
+  protectedReport:
+    ProtectedCspReport;
 }) {
   return {
     timestamp:
@@ -703,7 +698,7 @@ function createCspAuditEntry({
         .toISOString(),
 
     level:
-      analyzedReport
+      protectedReport
         .analysis
         .actionable
         ? "warn"
@@ -715,71 +710,93 @@ function createCspAuditEntry({
     requestId,
 
     report:
-      analyzedReport.report,
+      protectedReport.report,
 
     analysis: {
       fingerprint:
-        analyzedReport
+        protectedReport
           .analysis
           .fingerprint,
 
       category:
-        analyzedReport
+        protectedReport
           .analysis
           .category,
 
       directive:
-        analyzedReport
+        protectedReport
           .analysis
           .directive,
 
       blockedResourceKind:
-        analyzedReport
+        protectedReport
           .analysis
           .blockedResourceKind,
 
       severity:
-        analyzedReport
+        protectedReport
           .analysis
           .severity,
 
       actionable:
-        analyzedReport
+        protectedReport
           .analysis
           .actionable,
 
       reason:
-        analyzedReport
+        protectedReport
           .analysis
           .reason,
 
       disposition:
-        analyzedReport
+        protectedReport
           .analysis
           .disposition,
 
       statusCode:
-        analyzedReport
+        protectedReport
           .analysis
           .statusCode,
+    },
+
+    protection: {
+      duplicateCheckDegraded:
+        protectedReport
+          .duplicateProtection
+          .degraded,
+
+      duplicateReason:
+        protectedReport
+          .duplicateProtection
+          .reason,
     },
   };
 }
 
 function writeCspAuditLog({
   requestId,
-  analyzedReport,
+  protectedReport,
 }: {
-  requestId:
-    string;
+  requestId: string;
 
-  analyzedReport:
-    AnalyzedCspReport;
+  protectedReport:
+    ProtectedCspReport;
 }): void {
+  /*
+   * Duplicate report কোনো log তৈরি করবে না।
+   */
+  if (
+    protectedReport
+      .duplicateProtection
+      .duplicate
+  ) {
+    return;
+  }
+
   const entry =
     createCspAuditEntry({
       requestId,
-      analyzedReport,
+      protectedReport,
     });
 
   const serialized =
@@ -788,7 +805,7 @@ function writeCspAuditLog({
     );
 
   if (
-    analyzedReport
+    protectedReport
       .analysis
       .actionable
   ) {
@@ -809,11 +826,41 @@ function writeCspAuditLog({
 ========================================================= */
 
 export async function POST(
-  request:
-    NextRequest,
+  request: NextRequest,
 ): Promise<NextResponse> {
   const requestId =
     randomUUID();
+
+  /*
+   * Rate limiting body parsing-এর আগে হচ্ছে যাতে
+   * rejected requests-এর body process করতে না হয়।
+   */
+  const rateLimitResult =
+    await checkCspReportRateLimit(
+      request,
+    );
+
+  const rateLimitHeaders =
+    getCspReportRateLimitHeaders(
+      rateLimitResult,
+    );
+
+  if (!rateLimitResult.allowed) {
+    return createErrorResponse({
+      status: 429,
+
+      code:
+        "csp_report_rate_limited",
+
+      message:
+        "Too many CSP reports were submitted.",
+
+      requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
+    });
+  }
 
   const mediaType =
     readMediaType(
@@ -826,8 +873,7 @@ export async function POST(
     )
   ) {
     return createErrorResponse({
-      status:
-        415,
+      status: 415,
 
       code:
         "unsupported_csp_report_media_type",
@@ -836,6 +882,9 @@ export async function POST(
         "Unsupported CSP report media type.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
@@ -845,8 +894,7 @@ export async function POST(
     )
   ) {
     return createErrorResponse({
-      status:
-        413,
+      status: 413,
 
       code:
         "csp_report_too_large",
@@ -855,19 +903,20 @@ export async function POST(
         "CSP report body is too large.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
-  let rawBody:
-    string;
+  let rawBody: string;
 
   try {
     rawBody =
       await request.text();
   } catch {
     return createErrorResponse({
-      status:
-        400,
+      status: 400,
 
       code:
         "csp_report_read_failed",
@@ -876,6 +925,9 @@ export async function POST(
         "CSP report body could not be read.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
@@ -887,8 +939,7 @@ export async function POST(
     MAXIMUM_REPORT_BODY_BYTES
   ) {
     return createErrorResponse({
-      status:
-        413,
+      status: 413,
 
       code:
         "csp_report_too_large",
@@ -897,15 +948,15 @@ export async function POST(
         "CSP report body is too large.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
-  if (
-    !rawBody.trim()
-  ) {
+  if (!rawBody.trim()) {
     return createErrorResponse({
-      status:
-        400,
+      status: 400,
 
       code:
         "csp_report_empty",
@@ -914,11 +965,13 @@ export async function POST(
         "CSP report body is required.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
-  let payload:
-    unknown;
+  let payload: unknown;
 
   try {
     payload =
@@ -927,8 +980,7 @@ export async function POST(
       );
   } catch {
     return createErrorResponse({
-      status:
-        400,
+      status: 400,
 
       code:
         "csp_report_invalid_json",
@@ -937,6 +989,9 @@ export async function POST(
         "CSP report body must contain valid JSON.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
@@ -946,12 +1001,10 @@ export async function POST(
     );
 
   if (
-    reports.length ===
-    0
+    reports.length === 0
   ) {
     return createErrorResponse({
-      status:
-        400,
+      status: 400,
 
       code:
         "csp_report_invalid",
@@ -960,6 +1013,9 @@ export async function POST(
         "CSP report body is invalid.",
 
       requestId,
+
+      additionalHeaders:
+        rateLimitHeaders,
     });
   }
 
@@ -968,32 +1024,24 @@ export async function POST(
       reports,
     );
 
+  const protectedReports =
+    await applyDuplicateProtection(
+      analyzedReports,
+    );
+
   for (
-    const analyzedReport of
-    analyzedReports
+    const protectedReport of
+    protectedReports
   ) {
     writeCspAuditLog({
       requestId,
-      analyzedReport,
+      protectedReport,
     });
   }
 
-  const actionableReports =
-    analyzedReports.filter(
-      (
-        analyzedReport,
-      ) =>
-        analyzedReport
-          .analysis
-          .actionable,
-    ).length;
-
   return createAcceptedResponse({
     requestId,
-
-    acceptedReports:
-      analyzedReports.length,
-
-    actionableReports,
+    protectedReports,
+    rateLimitResult,
   });
 }

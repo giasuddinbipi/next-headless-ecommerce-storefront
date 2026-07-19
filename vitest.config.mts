@@ -148,6 +148,7 @@ export default defineConfig({
   "src/lib/content-security-policy.ts",
   "src/app/api/security/csp-report/route.ts",
   "src/lib/csp-violation-analysis.ts",
+  "src/lib/csp-report-protection.ts",
 ],
 
       exclude: [

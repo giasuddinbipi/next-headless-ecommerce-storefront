@@ -4,22 +4,83 @@ import {
 
 import {
   afterEach,
+  beforeEach,
   describe,
   expect,
   it,
   vi,
 } from "vitest";
 
+/* =========================================================
+   Hoisted CSP protection mocks
+========================================================= */
+
+const protectionBridge =
+  vi.hoisted(() => ({
+    checkRateLimit:
+      vi.fn(),
+
+    getRateLimitHeaders:
+      vi.fn(),
+
+    checkDuplicate:
+      vi.fn(),
+  }));
+
+vi.mock(
+  "@/lib/csp-report-protection",
+  () => ({
+    checkCspReportRateLimit:
+      protectionBridge
+        .checkRateLimit,
+
+    getCspReportRateLimitHeaders:
+      protectionBridge
+        .getRateLimitHeaders,
+
+    checkCspReportDuplicate:
+      protectionBridge
+        .checkDuplicate,
+  }),
+);
+
+/*
+ * Import the route only after defining the mocked dependency.
+ */
 import {
   POST,
 } from "@/app/api/security/csp-report/route";
 
 /* =========================================================
-   Types and helpers
+   Types
 ========================================================= */
 
 type UnknownRecord =
   Record<string, unknown>;
+
+type MockRateLimitResult = {
+  allowed:
+    boolean;
+
+  degraded:
+    boolean;
+
+  limit:
+    number;
+
+  remaining:
+    number;
+
+  reset:
+    number;
+
+  retryAfterSeconds:
+    number;
+};
+
+/* =========================================================
+   Helpers
+========================================================= */
 
 function isRecord(
   value:
@@ -76,6 +137,13 @@ function createRequest({
     new Headers({
       "Content-Type":
         contentType,
+
+      /*
+       * A predictable test IP is used.
+       * The mocked protection module prevents Redis access.
+       */
+      "X-Forwarded-For":
+        "203.0.113.45",
     });
 
   if (
@@ -113,7 +181,11 @@ function readLoggedObject(
       ),
     );
 
-  if (!isRecord(parsed)) {
+  if (
+    !isRecord(
+      parsed,
+    )
+  ) {
     throw new Error(
       "Expected a structured CSP audit object.",
     );
@@ -121,6 +193,112 @@ function readLoggedObject(
 
   return parsed;
 }
+
+function createRateLimitHeaders(
+  result:
+    MockRateLimitResult,
+): Record<
+  string,
+  string
+> {
+  if (
+    result.degraded
+  ) {
+    return {
+      "X-CSP-RateLimit-Degraded":
+        "true",
+    };
+  }
+
+  const headers:
+    Record<string, string> = {
+    "X-CSP-RateLimit-Degraded":
+      "false",
+
+    "RateLimit-Limit":
+      String(
+        result.limit,
+      ),
+
+    "RateLimit-Remaining":
+      String(
+        result.remaining,
+      ),
+
+    "RateLimit-Reset":
+      String(
+        Math.ceil(
+          result.reset /
+            1_000,
+        ),
+      ),
+  };
+
+  if (
+    !result.allowed
+  ) {
+    headers[
+      "Retry-After"
+    ] =
+      String(
+        result
+          .retryAfterSeconds,
+      );
+  }
+
+  return headers;
+}
+
+/* =========================================================
+   Setup and cleanup
+========================================================= */
+
+beforeEach(() => {
+  protectionBridge
+    .checkRateLimit
+    .mockReset()
+    .mockResolvedValue({
+      allowed:
+        true,
+
+      degraded:
+        false,
+
+      limit:
+        60,
+
+      remaining:
+        59,
+
+      reset:
+        Date.now() +
+        60_000,
+
+      retryAfterSeconds:
+        0,
+    });
+
+  protectionBridge
+    .getRateLimitHeaders
+    .mockReset()
+    .mockImplementation(
+      createRateLimitHeaders,
+    );
+
+  protectionBridge
+    .checkDuplicate
+    .mockReset()
+    .mockResolvedValue({
+      duplicate:
+        false,
+
+      degraded:
+        false,
+
+      reason:
+        "first_seen",
+    });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -222,12 +400,82 @@ describe(
 
         expect(
           response.headers.get(
+            "x-csp-duplicate-reports",
+          ),
+        ).toBe(
+          "0",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-logged-reports",
+          ),
+        ).toBe(
+          "1",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-duplicate-protection-degraded",
+          ),
+        ).toBe(
+          "false",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-ratelimit-degraded",
+          ),
+        ).toBe(
+          "false",
+        );
+
+        expect(
+          response.headers.get(
+            "ratelimit-limit",
+          ),
+        ).toBe(
+          "60",
+        );
+
+        expect(
+          response.headers.get(
+            "ratelimit-remaining",
+          ),
+        ).toBe(
+          "59",
+        );
+
+        expect(
+          response.headers.get(
             "x-request-id",
           ),
         ).toEqual(
           expect.any(
             String,
           ),
+        );
+
+        expect(
+          response.headers.get(
+            "cache-control",
+          ),
+        ).toContain(
+          "no-store",
+        );
+
+        expect(
+          protectionBridge
+            .checkRateLimit,
+        ).toHaveBeenCalledTimes(
+          1,
+        );
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).toHaveBeenCalledTimes(
+          1,
         );
 
         expect(
@@ -286,6 +534,14 @@ describe(
             statusCode:
               200,
           },
+
+          protection: {
+            duplicateCheckDegraded:
+              false,
+
+            duplicateReason:
+              "first_seen",
+          },
         });
 
         const analysis =
@@ -293,7 +549,8 @@ describe(
             UnknownRecord;
 
         expect(
-          analysis.fingerprint,
+          analysis
+            .fingerprint,
         ).toMatch(
           /^[a-f0-9]{24}$/,
         );
@@ -326,6 +583,16 @@ describe(
             .spyOn(
               console,
               "warn",
+            )
+            .mockImplementation(
+              () => undefined,
+            );
+
+        const infoSpy =
+          vi
+            .spyOn(
+              console,
+              "info",
             )
             .mockImplementation(
               () => undefined,
@@ -396,10 +663,45 @@ describe(
         );
 
         expect(
+          response.headers.get(
+            "x-csp-reports-accepted",
+          ),
+        ).toBe(
+          "2",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-duplicate-reports",
+          ),
+        ).toBe(
+          "0",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-logged-reports",
+          ),
+        ).toBe(
+          "2",
+        );
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).toHaveBeenCalledTimes(
+          2,
+        );
+
+        expect(
           warnSpy,
         ).toHaveBeenCalledTimes(
           2,
         );
+
+        expect(
+          infoSpy,
+        ).not.toHaveBeenCalled();
 
         const firstEntry =
           readLoggedObject(
@@ -549,6 +851,29 @@ describe(
         );
 
         expect(
+          response.headers.get(
+            "x-csp-duplicate-reports",
+          ),
+        ).toBe(
+          "0",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-logged-reports",
+          ),
+        ).toBe(
+          "2",
+        );
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).toHaveBeenCalledTimes(
+          2,
+        );
+
+        expect(
           warnSpy,
         ).toHaveBeenCalledTimes(
           1,
@@ -588,6 +913,14 @@ describe(
             reason:
               "external_connection_violation",
           },
+
+          protection: {
+            duplicateCheckDegraded:
+              false,
+
+            duplicateReason:
+              "first_seen",
+          },
         });
 
         const noiseEntry =
@@ -614,6 +947,14 @@ describe(
 
             reason:
               "browser_extension_noise",
+          },
+
+          protection: {
+            duplicateCheckDegraded:
+              false,
+
+            duplicateReason:
+              "first_seen",
           },
         });
       },
@@ -683,6 +1024,26 @@ describe(
         });
 
         expect(
+          response.headers.get(
+            "x-csp-ratelimit-degraded",
+          ),
+        ).toBe(
+          "false",
+        );
+
+        expect(
+          protectionBridge
+            .checkRateLimit,
+        ).toHaveBeenCalledTimes(
+          1,
+        );
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
+
+        expect(
           warnSpy,
         ).not.toHaveBeenCalled();
 
@@ -722,6 +1083,11 @@ describe(
               "csp_report_invalid_json",
           },
         });
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
       },
     );
 
@@ -755,6 +1121,11 @@ describe(
               "csp_report_empty",
           },
         });
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
       },
     );
 
@@ -794,6 +1165,11 @@ describe(
               "csp_report_invalid",
           },
         });
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
       },
     );
 
@@ -833,6 +1209,11 @@ describe(
               "csp_report_too_large",
           },
         });
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
       },
     );
 
@@ -883,6 +1264,11 @@ describe(
               "csp_report_too_large",
           },
         });
+
+        expect(
+          protectionBridge
+            .checkDuplicate,
+        ).not.toHaveBeenCalled();
       },
     );
   },
