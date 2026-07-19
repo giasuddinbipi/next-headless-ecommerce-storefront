@@ -11,6 +11,11 @@ import {
   NextResponse,
 } from "next/server";
 
+import {
+  analyzeCspViolation,
+  type CspViolationAnalysis,
+} from "@/lib/csp-violation-analysis";
+
 /* =========================================================
    Route configuration
 ========================================================= */
@@ -52,6 +57,14 @@ type SafeCspReport = {
 
   statusCode:
     number | null;
+};
+
+type AnalyzedCspReport = {
+  report:
+    SafeCspReport;
+
+  analysis:
+    CspViolationAnalysis;
 };
 
 /* =========================================================
@@ -249,7 +262,11 @@ function sanitizeUrlForAudit(
     lowerValue ===
       "self" ||
     lowerValue ===
-      "none"
+      "'self'" ||
+    lowerValue ===
+      "none" ||
+    lowerValue ===
+      "'none'"
   ) {
     return lowerValue;
   }
@@ -299,16 +316,17 @@ function sanitizeUrlForAudit(
         "https:"
     ) {
       /*
-       * Query, fragment এবং pathname log করা হচ্ছে না।
+       * Path, query এবং fragment audit log-এ রাখা হবে না।
        */
       return url.origin;
     }
 
+    /*
+     * Browser-extension অথবা অন্য protocol-এর
+     * সম্পূর্ণ URL নয়, শুধু protocol রাখা হবে।
+     */
     return url.protocol;
   } catch {
-    /*
-     * Malformed raw URL audit log-এ রাখা হবে না।
-     */
     return null;
   }
 }
@@ -430,10 +448,6 @@ function normalizeCspReport(
       ],
     );
 
-  /*
-   * Recognized CSP information না থাকলে এটি
-   * valid report হিসেবে গ্রহণ করা হবে না।
-   */
   if (
     !documentUrl &&
     !blockedUrl &&
@@ -503,6 +517,24 @@ function extractCspReports(
   }
 
   return reports;
+}
+
+function analyzeReports(
+  reports:
+    SafeCspReport[],
+): AnalyzedCspReport[] {
+  return reports.map(
+    (
+      report,
+    ) => ({
+      report,
+
+      analysis:
+        analyzeCspViolation(
+          report,
+        ),
+    }),
+  );
 }
 
 /* =========================================================
@@ -602,13 +634,24 @@ function createErrorResponse({
 function createAcceptedResponse({
   requestId,
   acceptedReports,
+  actionableReports,
 }: {
   requestId:
     string;
 
   acceptedReports:
     number;
+
+  actionableReports:
+    number;
 }): NextResponse {
+  const noiseReports =
+    Math.max(
+      0,
+      acceptedReports -
+        actionableReports,
+    );
+
   return new NextResponse(
     null,
     {
@@ -625,6 +668,16 @@ function createAcceptedResponse({
           String(
             acceptedReports,
           ),
+
+        "X-CSP-Actionable-Reports":
+          String(
+            actionableReports,
+          ),
+
+        "X-CSP-Noise-Reports":
+          String(
+            noiseReports,
+          ),
       },
     },
   );
@@ -634,32 +687,120 @@ function createAcceptedResponse({
    Structured audit logging
 ========================================================= */
 
-function writeCspAuditLog({
+function createCspAuditEntry({
   requestId,
-  report,
+  analyzedReport,
 }: {
   requestId:
     string;
 
-  report:
-    SafeCspReport;
+  analyzedReport:
+    AnalyzedCspReport;
+}) {
+  return {
+    timestamp:
+      new Date()
+        .toISOString(),
+
+    level:
+      analyzedReport
+        .analysis
+        .actionable
+        ? "warn"
+        : "info",
+
+    event:
+      "security.csp_violation",
+
+    requestId,
+
+    report:
+      analyzedReport.report,
+
+    analysis: {
+      fingerprint:
+        analyzedReport
+          .analysis
+          .fingerprint,
+
+      category:
+        analyzedReport
+          .analysis
+          .category,
+
+      directive:
+        analyzedReport
+          .analysis
+          .directive,
+
+      blockedResourceKind:
+        analyzedReport
+          .analysis
+          .blockedResourceKind,
+
+      severity:
+        analyzedReport
+          .analysis
+          .severity,
+
+      actionable:
+        analyzedReport
+          .analysis
+          .actionable,
+
+      reason:
+        analyzedReport
+          .analysis
+          .reason,
+
+      disposition:
+        analyzedReport
+          .analysis
+          .disposition,
+
+      statusCode:
+        analyzedReport
+          .analysis
+          .statusCode,
+    },
+  };
+}
+
+function writeCspAuditLog({
+  requestId,
+  analyzedReport,
+}: {
+  requestId:
+    string;
+
+  analyzedReport:
+    AnalyzedCspReport;
 }): void {
-  console.warn(
-    JSON.stringify({
-      timestamp:
-        new Date()
-          .toISOString(),
-
-      level:
-        "warn",
-
-      event:
-        "security.csp_violation",
-
+  const entry =
+    createCspAuditEntry({
       requestId,
+      analyzedReport,
+    });
 
-      report,
-    }),
+  const serialized =
+    JSON.stringify(
+      entry,
+    );
+
+  if (
+    analyzedReport
+      .analysis
+      .actionable
+  ) {
+    console.warn(
+      serialized,
+    );
+
+    return;
+  }
+
+  console.info(
+    serialized,
   );
 }
 
@@ -822,20 +963,37 @@ export async function POST(
     });
   }
 
+  const analyzedReports =
+    analyzeReports(
+      reports,
+    );
+
   for (
-    const report of
-    reports
+    const analyzedReport of
+    analyzedReports
   ) {
     writeCspAuditLog({
       requestId,
-      report,
+      analyzedReport,
     });
   }
+
+  const actionableReports =
+    analyzedReports.filter(
+      (
+        analyzedReport,
+      ) =>
+        analyzedReport
+          .analysis
+          .actionable,
+    ).length;
 
   return createAcceptedResponse({
     requestId,
 
     acceptedReports:
-      reports.length,
+      analyzedReports.length,
+
+    actionableReports,
   });
 }

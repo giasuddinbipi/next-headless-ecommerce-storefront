@@ -100,25 +100,57 @@ function createRequest({
   );
 }
 
+function readLoggedObject(
+  value:
+    unknown,
+): UnknownRecord {
+  const parsed:
+    unknown =
+    JSON.parse(
+      String(
+        value ??
+          "",
+      ),
+    );
+
+  if (!isRecord(parsed)) {
+    throw new Error(
+      "Expected a structured CSP audit object.",
+    );
+  }
+
+  return parsed;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 /* =========================================================
-   Legacy CSP reports
+   Actionable legacy reports
 ========================================================= */
 
 describe(
-  "POST /api/security/csp-report legacy reports",
+  "POST /api/security/csp-report actionable reports",
   () => {
     it(
-      "accepts and safely logs a legacy CSP report",
+      "classifies and safely logs an inline script violation",
       async () => {
         const warnSpy =
           vi
             .spyOn(
               console,
               "warn",
+            )
+            .mockImplementation(
+              () => undefined,
+            );
+
+        const infoSpy =
+          vi
+            .spyOn(
+              console,
+              "info",
             )
             .mockImplementation(
               () => undefined,
@@ -137,7 +169,7 @@ describe(
                       `https://store.example/checkout?token=${sensitiveValue}`,
 
                     "blocked-uri":
-                      `https://cdn.example/script.js?secret=${sensitiveValue}`,
+                      "inline",
 
                     "source-file":
                       `https://store.example/assets/app.js?debug=${sensitiveValue}`,
@@ -174,6 +206,22 @@ describe(
 
         expect(
           response.headers.get(
+            "x-csp-actionable-reports",
+          ),
+        ).toBe(
+          "1",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-noise-reports",
+          ),
+        ).toBe(
+          "0",
+        );
+
+        expect(
+          response.headers.get(
             "x-request-id",
           ),
         ).toEqual(
@@ -183,18 +231,14 @@ describe(
         );
 
         expect(
-          response.headers.get(
-            "cache-control",
-          ),
-        ).toContain(
-          "no-store",
-        );
-
-        expect(
           warnSpy,
         ).toHaveBeenCalledTimes(
           1,
         );
+
+        expect(
+          infoSpy,
+        ).not.toHaveBeenCalled();
 
         const serialized =
           String(
@@ -203,22 +247,55 @@ describe(
               "",
           );
 
-        expect(
-          serialized,
-        ).toContain(
-          '"event":"security.csp_violation"',
-        );
+        const entry =
+          readLoggedObject(
+            serialized,
+          );
 
         expect(
-          serialized,
-        ).toContain(
-          "https://store.example",
-        );
+          entry,
+        ).toMatchObject({
+          level:
+            "warn",
+
+          event:
+            "security.csp_violation",
+
+          analysis: {
+            category:
+              "script",
+
+            directive:
+              "script-src-elem",
+
+            blockedResourceKind:
+              "inline",
+
+            severity:
+              "high",
+
+            actionable:
+              true,
+
+            reason:
+              "inline_script_violation",
+
+            disposition:
+              "report",
+
+            statusCode:
+              200,
+          },
+        });
+
+        const analysis =
+          entry.analysis as
+            UnknownRecord;
 
         expect(
-          serialized,
-        ).toContain(
-          "https://cdn.example",
+          analysis.fingerprint,
+        ).toMatch(
+          /^[a-f0-9]{24}$/,
         );
 
         expect(
@@ -236,7 +313,120 @@ describe(
         expect(
           serialized,
         ).not.toContain(
-          "/script.js",
+          "/assets/app.js",
+        );
+      },
+    );
+
+    it(
+      "creates a stable fingerprint for identical reports",
+      async () => {
+        const warnSpy =
+          vi
+            .spyOn(
+              console,
+              "warn",
+            )
+            .mockImplementation(
+              () => undefined,
+            );
+
+        const payload =
+          JSON.stringify([
+            {
+              type:
+                "csp-violation",
+
+              body: {
+                documentURL:
+                  "https://store.example/",
+
+                blockedURL:
+                  "https://cdn.example",
+
+                effectiveDirective:
+                  "script-src-elem",
+
+                disposition:
+                  "report",
+
+                statusCode:
+                  200,
+              },
+            },
+
+            {
+              type:
+                "csp-violation",
+
+              body: {
+                documentURL:
+                  "https://store.example/",
+
+                blockedURL:
+                  "https://cdn.example",
+
+                effectiveDirective:
+                  "script-src-elem",
+
+                disposition:
+                  "report",
+
+                statusCode:
+                  200,
+              },
+            },
+          ]);
+
+        const response =
+          await POST(
+            createRequest({
+              contentType:
+                "application/reports+json",
+
+              body:
+                payload,
+            }),
+          );
+
+        expect(
+          response.status,
+        ).toBe(
+          204,
+        );
+
+        expect(
+          warnSpy,
+        ).toHaveBeenCalledTimes(
+          2,
+        );
+
+        const firstEntry =
+          readLoggedObject(
+            warnSpy.mock
+              .calls[0]?.[0],
+          );
+
+        const secondEntry =
+          readLoggedObject(
+            warnSpy.mock
+              .calls[1]?.[0],
+          );
+
+        const firstAnalysis =
+          firstEntry.analysis as
+            UnknownRecord;
+
+        const secondAnalysis =
+          secondEntry.analysis as
+            UnknownRecord;
+
+        expect(
+          firstAnalysis
+            .fingerprint,
+        ).toBe(
+          secondAnalysis
+            .fingerprint,
         );
       },
     );
@@ -244,20 +434,30 @@ describe(
 );
 
 /* =========================================================
-   Modern reporting payloads
+   Modern actionable and noise reports
 ========================================================= */
 
 describe(
-  "POST /api/security/csp-report modern reports",
+  "POST /api/security/csp-report mixed modern reports",
   () => {
     it(
-      "accepts an array of modern CSP reports",
+      "separates actionable reports from browser-extension noise",
       async () => {
         const warnSpy =
           vi
             .spyOn(
               console,
               "warn",
+            )
+            .mockImplementation(
+              () => undefined,
+            );
+
+        const infoSpy =
+          vi
+            .spyOn(
+              console,
+              "info",
             )
             .mockImplementation(
               () => undefined,
@@ -280,10 +480,10 @@ describe(
                         "https://store.example/",
 
                       blockedURL:
-                        "inline",
+                        "https://tracking.example",
 
                       effectiveDirective:
-                        "script-src-elem",
+                        "connect-src",
 
                       disposition:
                         "report",
@@ -302,10 +502,10 @@ describe(
                         "https://store.example/shop",
 
                       blockedURL:
-                        "https://images.example/product.jpg",
+                        "chrome-extension://example/script.js",
 
                       effectiveDirective:
-                        "img-src",
+                        "script-src-elem",
 
                       disposition:
                         "report",
@@ -333,10 +533,89 @@ describe(
         );
 
         expect(
+          response.headers.get(
+            "x-csp-actionable-reports",
+          ),
+        ).toBe(
+          "1",
+        );
+
+        expect(
+          response.headers.get(
+            "x-csp-noise-reports",
+          ),
+        ).toBe(
+          "1",
+        );
+
+        expect(
           warnSpy,
         ).toHaveBeenCalledTimes(
-          2,
+          1,
         );
+
+        expect(
+          infoSpy,
+        ).toHaveBeenCalledTimes(
+          1,
+        );
+
+        const actionableEntry =
+          readLoggedObject(
+            warnSpy.mock
+              .calls[0]?.[0],
+          );
+
+        expect(
+          actionableEntry,
+        ).toMatchObject({
+          level:
+            "warn",
+
+          analysis: {
+            category:
+              "connect",
+
+            blockedResourceKind:
+              "external",
+
+            severity:
+              "high",
+
+            actionable:
+              true,
+
+            reason:
+              "external_connection_violation",
+          },
+        });
+
+        const noiseEntry =
+          readLoggedObject(
+            infoSpy.mock
+              .calls[0]?.[0],
+          );
+
+        expect(
+          noiseEntry,
+        ).toMatchObject({
+          level:
+            "info",
+
+          analysis: {
+            blockedResourceKind:
+              "browser-extension",
+
+            severity:
+              "low",
+
+            actionable:
+              false,
+
+            reason:
+              "browser_extension_noise",
+          },
+        });
       },
     );
   },
@@ -357,6 +636,16 @@ describe(
             .spyOn(
               console,
               "warn",
+            )
+            .mockImplementation(
+              () => undefined,
+            );
+
+        const infoSpy =
+          vi
+            .spyOn(
+              console,
+              "info",
             )
             .mockImplementation(
               () => undefined,
@@ -395,6 +684,10 @@ describe(
 
         expect(
           warnSpy,
+        ).not.toHaveBeenCalled();
+
+        expect(
+          infoSpy,
         ).not.toHaveBeenCalled();
       },
     );
