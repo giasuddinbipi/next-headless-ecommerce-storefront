@@ -1,0 +1,443 @@
+name: Scheduled Production Health Monitor
+
+on:
+  schedule:
+    # Runs every hour at minute 17.
+    - cron: "17 * * * *"
+
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: Simulate a failure to test incident alerts
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: scheduled-production-health-monitor
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor-production:
+    name: Monitor production health
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
+    environment:
+      name: production
+      url: ${{ vars.HEALTH_BASE_URL }}
+
+    env:
+      HEALTH_BASE_URL: ${{ vars.HEALTH_BASE_URL }}
+      HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+
+      HEALTH_VERIFY_TIMEOUT_MS: "10000"
+      HEALTH_VERIFY_RETRIES: "3"
+      HEALTH_VERIFY_RETRY_DELAY_MS: "3000"
+
+      INCIDENT_TITLE: "[Production Health] Storefront health verification failed"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Validate monitoring configuration
+        shell: bash
+        run: |
+          node <<'NODE'
+          const rawBaseUrl =
+            process.env.HEALTH_BASE_URL?.trim();
+
+          const token =
+            process.env.HEALTH_CHECK_TOKEN?.trim();
+
+          if (!rawBaseUrl) {
+            console.error(
+              "::error::HEALTH_BASE_URL is not configured.",
+            );
+
+            process.exit(1);
+          }
+
+          let parsedUrl;
+
+          try {
+            parsedUrl =
+              new URL(rawBaseUrl);
+          } catch {
+            console.error(
+              "::error::HEALTH_BASE_URL must be a valid URL.",
+            );
+
+            process.exit(1);
+          }
+
+          if (
+            parsedUrl.protocol !== "https:" &&
+            parsedUrl.protocol !== "http:"
+          ) {
+            console.error(
+              "::error::HEALTH_BASE_URL must use HTTP or HTTPS.",
+            );
+
+            process.exit(1);
+          }
+
+          if (
+            !token ||
+            token.length < 32 ||
+            token.length > 512
+          ) {
+            console.error(
+              "::error::HEALTH_CHECK_TOKEN must contain between 32 and 512 characters.",
+            );
+
+            process.exit(1);
+          }
+
+          console.log(
+            `[INFO] Monitoring target: ${parsedUrl.origin}`,
+          );
+
+          console.log(
+            "[INFO] Monitoring configuration is valid.",
+          );
+          NODE
+
+      - name: Install verification dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run production health verification
+        id: health_check
+        shell: bash
+        env:
+          SIMULATE_FAILURE: ${{ github.event.inputs.simulate_failure || 'false' }}
+        run: |
+          set +e
+
+          if [ "${SIMULATE_FAILURE}" = "true" ]; then
+            {
+              echo "[INFO] Simulated health-monitor failure requested."
+              echo "[FAIL] Production health verification was intentionally failed."
+            } | tee health-verification.log
+
+            STATUS=1
+          else
+            npm run health:verify 2>&1 | tee health-verification.log
+            STATUS="${PIPESTATUS[0]}"
+          fi
+
+          echo "exit_code=${STATUS}" >> "$GITHUB_OUTPUT"
+
+          if [ "${STATUS}" -eq 0 ]; then
+            echo "outcome=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+          fi
+
+          # The alert steps must still run, so failure is applied later.
+          exit 0
+
+      - name: Create or update production incident
+        if: ${{ always() && steps.health_check.outputs.exit_code != '0' }}
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          INCIDENT_TITLE: ${{ env.INCIDENT_TITLE }}
+          HEALTH_BASE_URL: ${{ env.HEALTH_BASE_URL }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEALTH_EXIT_CODE: ${{ steps.health_check.outputs.exit_code }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+          script: |
+            const fs =
+              require("node:fs");
+
+            const title =
+              process.env.INCIDENT_TITLE;
+
+            const logPath =
+              "health-verification.log";
+
+            let verificationLog =
+              "No health-verification log was captured.";
+
+            if (
+              fs.existsSync(
+                logPath,
+              )
+            ) {
+              verificationLog =
+                fs.readFileSync(
+                  logPath,
+                  "utf8",
+                );
+            }
+
+            /*
+             * Prevent accidental Markdown fence termination
+             * and keep the issue body within a reasonable size.
+             */
+            const safeLog =
+              verificationLog
+                .replaceAll(
+                  "```",
+                  "'''",
+                )
+                .slice(
+                  -6000,
+                );
+
+            const incidentBody = [
+              "## Production health verification failed",
+              "",
+              `- Target: \`${process.env.HEALTH_BASE_URL}\``,
+              `- Detected at: \`${new Date().toISOString()}\``,
+              `- Trigger: \`${process.env.EVENT_NAME}\``,
+              `- Commit: \`${process.env.COMMIT_SHA}\``,
+              `- Exit code: \`${process.env.HEALTH_EXIT_CODE || "unavailable"}\``,
+              `- Workflow run: ${process.env.RUN_URL}`,
+              "",
+              "### Verification output",
+              "",
+              "```text",
+              safeLog,
+              "```",
+              "",
+              "This issue will be closed automatically after a successful production health check.",
+            ].join(
+              "\n",
+            );
+
+            const openIssues =
+              await github.paginate(
+                github.rest.issues.listForRepo,
+                {
+                  owner:
+                    context.repo.owner,
+
+                  repo:
+                    context.repo.repo,
+
+                  state:
+                    "open",
+
+                  per_page:
+                    100,
+                },
+              );
+
+            const existingIncident =
+              openIssues.find(
+                (
+                  issue,
+                ) =>
+                  !issue.pull_request &&
+                  issue.title ===
+                    title,
+              );
+
+            if (
+              existingIncident
+            ) {
+              await github.rest.issues.createComment({
+                owner:
+                  context.repo.owner,
+
+                repo:
+                  context.repo.repo,
+
+                issue_number:
+                  existingIncident.number,
+
+                body:
+                  incidentBody,
+              });
+
+              core.warning(
+                `Updated production incident #${existingIncident.number}.`,
+              );
+
+              return;
+            }
+
+            const createdIncident =
+              await github.rest.issues.create({
+                owner:
+                  context.repo.owner,
+
+                repo:
+                  context.repo.repo,
+
+                title,
+
+                body:
+                  incidentBody,
+              });
+
+            core.warning(
+              `Created production incident #${createdIncident.data.number}.`,
+            );
+
+      - name: Close resolved production incident
+        if: ${{ always() && steps.health_check.outputs.exit_code == '0' }}
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          INCIDENT_TITLE: ${{ env.INCIDENT_TITLE }}
+          HEALTH_BASE_URL: ${{ env.HEALTH_BASE_URL }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+          script: |
+            const title =
+              process.env.INCIDENT_TITLE;
+
+            const openIssues =
+              await github.paginate(
+                github.rest.issues.listForRepo,
+                {
+                  owner:
+                    context.repo.owner,
+
+                  repo:
+                    context.repo.repo,
+
+                  state:
+                    "open",
+
+                  per_page:
+                    100,
+                },
+              );
+
+            const incidents =
+              openIssues.filter(
+                (
+                  issue,
+                ) =>
+                  !issue.pull_request &&
+                  issue.title ===
+                    title,
+              );
+
+            if (
+              incidents.length ===
+              0
+            ) {
+              core.info(
+                "No open production health incident exists.",
+              );
+
+              return;
+            }
+
+            const recoveryBody = [
+              "## Production health recovered",
+              "",
+              `- Target: \`${process.env.HEALTH_BASE_URL}\``,
+              `- Recovered at: \`${new Date().toISOString()}\``,
+              `- Commit: \`${process.env.COMMIT_SHA}\``,
+              `- Successful workflow run: ${process.env.RUN_URL}`,
+              "",
+              "The scheduled production health verification completed successfully.",
+            ].join(
+              "\n",
+            );
+
+            for (
+              const incident of
+              incidents
+            ) {
+              await github.rest.issues.createComment({
+                owner:
+                  context.repo.owner,
+
+                repo:
+                  context.repo.repo,
+
+                issue_number:
+                  incident.number,
+
+                body:
+                  recoveryBody,
+              });
+
+              await github.rest.issues.update({
+                owner:
+                  context.repo.owner,
+
+                repo:
+                  context.repo.repo,
+
+                issue_number:
+                  incident.number,
+
+                state:
+                  "closed",
+              });
+
+              core.info(
+                `Closed recovered production incident #${incident.number}.`,
+              );
+            }
+
+      - name: Write monitoring summary
+        if: always()
+        shell: bash
+        env:
+          HEALTH_OUTCOME: ${{ steps.health_check.outputs.outcome }}
+          HEALTH_EXIT_CODE: ${{ steps.health_check.outputs.exit_code }}
+        run: |
+          RESULT="${HEALTH_OUTCOME:-not-run}"
+          EXIT_CODE="${HEALTH_EXIT_CODE:-unavailable}"
+
+          case "${RESULT}" in
+            success)
+              ICON="✅"
+              ;;
+
+            failure)
+              ICON="❌"
+              ;;
+
+            *)
+              ICON="⚠️"
+              ;;
+          esac
+
+          {
+            echo "## Scheduled Production Health Monitor"
+            echo ""
+            echo "- Environment: \`production\`"
+            echo "- Target: \`${HEALTH_BASE_URL}\`"
+            echo "- Result: ${ICON} \`${RESULT}\`"
+            echo "- Exit code: \`${EXIT_CODE}\`"
+            echo "- Workflow run: \`${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark unhealthy monitoring run as failed
+        if: ${{ always() && steps.health_check.outputs.exit_code != '' && steps.health_check.outputs.exit_code != '0' }}
+        shell: bash
+        run: |
+          echo "::error::Production health verification failed."
+          exit 1
