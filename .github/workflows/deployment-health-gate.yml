@@ -1,0 +1,206 @@
+name: Deployment Health Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment_name:
+        description: Environment containing the health-check configuration
+        required: true
+        type: environment
+
+      base_url:
+        description: Optional deployed URL override
+        required: false
+        type: string
+
+      retries:
+        description: Maximum verification attempts
+        required: true
+        default: 5
+        type: number
+
+      retry_delay_ms:
+        description: Delay between attempts in milliseconds
+        required: true
+        default: 3000
+        type: number
+
+  workflow_call:
+    inputs:
+      environment_name:
+        description: GitHub deployment environment
+        required: false
+        default: production
+        type: string
+
+      base_url:
+        description: Deployed application URL
+        required: false
+        default: ""
+        type: string
+
+      retries:
+        description: Maximum verification attempts
+        required: false
+        default: 5
+        type: number
+
+      retry_delay_ms:
+        description: Delay between attempts in milliseconds
+        required: false
+        default: 3000
+        type: number
+
+    secrets:
+      HEALTH_CHECK_TOKEN:
+        description: Optional caller-provided health-check token
+        required: false
+
+# A newer deployment makes an older pending health gate obsolete.
+concurrency:
+  group: deployment-health-${{ inputs.environment_name }}
+  cancel-in-progress: true
+
+jobs:
+  verify-deployment-health:
+    name: Verify ${{ inputs.environment_name }} deployment
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 12
+
+    permissions:
+      contents: read
+
+    environment:
+      name: ${{ inputs.environment_name }}
+      url: ${{ inputs.base_url || vars.HEALTH_BASE_URL }}
+
+    env:
+      # An explicit workflow input takes priority.
+      HEALTH_BASE_URL: ${{ inputs.base_url || vars.HEALTH_BASE_URL }}
+
+      # The environment or caller-provided secret is used.
+      HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+
+      HEALTH_VERIFY_TIMEOUT_MS: "10000"
+      HEALTH_VERIFY_RETRIES: ${{ inputs.retries }}
+      HEALTH_VERIFY_RETRY_DELAY_MS: ${{ inputs.retry_delay_ms }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Validate health gate configuration
+        shell: bash
+        run: |
+          node <<'NODE'
+          const rawBaseUrl =
+            process.env.HEALTH_BASE_URL?.trim();
+
+          const healthToken =
+            process.env.HEALTH_CHECK_TOKEN?.trim();
+
+          if (!rawBaseUrl) {
+            console.error(
+              "::error::HEALTH_BASE_URL is not configured.",
+            );
+
+            process.exit(1);
+          }
+
+          let parsedUrl;
+
+          try {
+            parsedUrl =
+              new URL(rawBaseUrl);
+          } catch {
+            console.error(
+              "::error::HEALTH_BASE_URL must be a valid URL.",
+            );
+
+            process.exit(1);
+          }
+
+          if (
+            parsedUrl.protocol !== "https:" &&
+            parsedUrl.protocol !== "http:"
+          ) {
+            console.error(
+              "::error::HEALTH_BASE_URL must use HTTP or HTTPS.",
+            );
+
+            process.exit(1);
+          }
+
+          if (
+            !healthToken ||
+            healthToken.length < 32 ||
+            healthToken.length > 512
+          ) {
+            console.error(
+              "::error::HEALTH_CHECK_TOKEN must contain between 32 and 512 characters.",
+            );
+
+            process.exit(1);
+          }
+
+          console.log(
+            `[INFO] Target origin: ${parsedUrl.origin}`,
+          );
+
+          console.log(
+            "[INFO] Health gate configuration is valid.",
+          );
+          NODE
+
+      - name: Install verification dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run deployment health gate
+        id: health_gate
+        run: npm run health:verify
+
+      - name: Write health gate summary
+        if: always()
+        shell: bash
+        env:
+          VERIFY_OUTCOME: ${{ steps.health_gate.outcome }}
+          GATE_ENVIRONMENT: ${{ inputs.environment_name }}
+        run: |
+          RESULT="${VERIFY_OUTCOME:-not-run}"
+
+          case "$RESULT" in
+            success)
+              ICON="✅"
+              ;;
+
+            failure)
+              ICON="❌"
+              ;;
+
+            cancelled)
+              ICON="⚠️"
+              ;;
+
+            *)
+              ICON="⚠️"
+              ;;
+          esac
+
+          {
+            echo "## Deployment Health Gate"
+            echo ""
+            echo "- Environment: \`${GATE_ENVIRONMENT}\`"
+            echo "- Target: \`${HEALTH_BASE_URL}\`"
+            echo "- Result: ${ICON} \`${RESULT}\`"
+            echo "- Workflow run: \`${GITHUB_RUN_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
