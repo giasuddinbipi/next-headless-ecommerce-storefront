@@ -46,6 +46,15 @@ import {
 } from "@/lib/order-email";
 
 import {
+  auditError,
+  auditInfo,
+  auditWarn,
+  createRequestAuditContext,
+  getRequestAuditHeaders,
+  hashAuditIdentifier,
+} from "@/lib/request-audit";
+
+import {
   prepareSecureCheckout,
   SecureCheckoutError,
 } from "@/lib/secure-checkout";
@@ -1919,8 +1928,52 @@ function buildTrustedOrderLines(
 export async function POST(
   request: NextRequest,
 ) {
+  const auditContext =
+    createRequestAuditContext({
+      request,
+
+      operation:
+        "order-create",
+
+      route:
+        "/api/orders",
+    });
+
+  auditInfo(
+    auditContext,
+    "request.received",
+    {
+      originPresent:
+        Boolean(
+          request.headers.get(
+            "origin",
+          ),
+        ),
+
+      idempotencyPresent:
+        Boolean(
+          request.headers.get(
+            "idempotency-key",
+          ),
+        ),
+
+      contentType:
+        request.headers
+          .get(
+            "content-type",
+          )
+          ?.split(";")[0]
+          ?.trim() ??
+        "",
+    },
+  );
+
   let idempotencyReservation:
     OrderIdempotencyReservation | null =
+      null;
+
+  let subjectReference:
+    string | null =
       null;
 
   /*
@@ -1946,6 +1999,10 @@ export async function POST(
     ...getOrderResponseHeaders({
       replayed,
     }),
+
+    ...getRequestAuditHeaders(
+      auditContext,
+    ),
 
     ...rateLimitHeaders,
   });
@@ -1996,6 +2053,24 @@ export async function POST(
         : 0;
 
     /*
+     * Raw customer ID অথবা email log না করে
+     * privacy-safe HMAC reference রাখা হবে।
+     */
+    subjectReference =
+      hashAuditIdentifier({
+        type:
+          customerId > 0
+            ? "customer"
+            : "email",
+
+        value:
+          customerId > 0
+            ? customerId
+            : normalizedRequest
+                .billing.email,
+      });
+
+    /*
      * Authenticated customer-এর ক্ষেত্রে
      * customer ID, guest-এর ক্ষেত্রে billing
      * email এবং সব ক্ষেত্রে IP rate limited।
@@ -2019,6 +2094,37 @@ export async function POST(
     if (
       !rateLimitResult.allowed
     ) {
+      auditWarn(
+        auditContext,
+        "order.rate_limited",
+        {
+          subjectReference,
+
+          blockedScope:
+            rateLimitResult
+              .blockedScope,
+
+          retryAfterSeconds:
+            rateLimitResult
+              .retryAfterSeconds,
+
+          degraded:
+            rateLimitResult
+              .degraded,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status: 429,
+
+          outcome:
+            "rate_limited",
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
@@ -2077,6 +2183,15 @@ export async function POST(
         couponCode:
           normalizedRequest
             .couponCode,
+      });
+
+    const fingerprintReference =
+      hashAuditIdentifier({
+        type:
+          "idempotency",
+
+        value:
+          requestFingerprint,
       });
 
     const idempotencyScope =
@@ -2329,6 +2444,15 @@ export async function POST(
           "redis-v1",
       },
 
+      {
+        key:
+          "_headless_request_id",
+
+        value:
+          auditContext
+            .requestId,
+      },
+
       ...(validatedCoupon
         ? [
             {
@@ -2438,13 +2562,39 @@ export async function POST(
       });
 
     /*
-     * একই order request আগে completed হলে
+     * একই request আগে completed হলে
      * নতুন order নয়—cached response replay।
      */
     if (
       idempotencyDecision.kind ===
       "replay"
     ) {
+      auditInfo(
+        auditContext,
+        "order.idempotency_replayed",
+        {
+          subjectReference,
+          fingerprintReference,
+
+          responseStatus:
+            idempotencyDecision
+              .response.status,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            idempotencyDecision
+              .response.status,
+
+          outcome:
+            "idempotency_replay",
+        },
+      );
+
       return NextResponse.json(
         {
           ...idempotencyDecision
@@ -2474,6 +2624,26 @@ export async function POST(
       idempotencyDecision.kind ===
       "in_progress"
     ) {
+      auditWarn(
+        auditContext,
+        "order.idempotency_in_progress",
+        {
+          subjectReference,
+          fingerprintReference,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status: 409,
+
+          outcome:
+            "idempotency_in_progress",
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
@@ -2505,6 +2675,15 @@ export async function POST(
     idempotencyReservation =
       activeReservation;
 
+    auditInfo(
+      auditContext,
+      "order.idempotency_acquired",
+      {
+        subjectReference,
+        fingerprintReference,
+      },
+    );
+
     /*
      * এই point-এর পর failure হলে WooCommerce
      * order তৈরি হয়েছে কি না uncertain হতে পারে।
@@ -2512,10 +2691,63 @@ export async function POST(
     orderCreationStarted =
       true;
 
+    const totalQuantity =
+      secureCheckout.items.reduce(
+        (
+          total,
+          item,
+        ) =>
+          total +
+          item.quantity,
+        0,
+      );
+
+    auditInfo(
+      auditContext,
+      "order.creation_started",
+      {
+        subjectReference,
+
+        itemCount:
+          validatedLines.length,
+
+        totalQuantity,
+
+        currency:
+          trustedTotals.currency,
+
+        expectedTotal:
+          trustedTotals.total,
+      },
+    );
+
     const order =
       await createWooCommerceOrder(
         orderInput,
       );
+
+    auditInfo(
+      auditContext,
+      "order.created",
+      {
+        orderId:
+          order.id,
+
+        orderNumber:
+          order.number,
+
+        status:
+          order.status,
+
+        currency:
+          order.currency,
+
+        total:
+          order.total,
+
+        subjectReference,
+      },
+    );
 
     /*
      * Created WooCommerce totals বনাম
@@ -2588,9 +2820,42 @@ export async function POST(
     if (
       !totalsVerified
     ) {
+      auditWarn(
+        auditContext,
+        "order.totals_mismatch",
+        {
+          orderId:
+            order.id,
+
+          expectedTotal:
+            trustedTotals.total,
+
+          createdTotal:
+            order.total,
+
+          expectedDiscount:
+            trustedTotals.discount,
+
+          createdDiscount:
+            order.discount_total ??
+            "0",
+
+          expectedShipping:
+            trustedTotals.shipping,
+
+          createdShipping:
+            order.shipping_total ??
+            "0",
+        },
+      );
+
       console.error(
         "Created order totals differ from server calculation:",
         {
+          requestId:
+            auditContext
+              .requestId,
+
           orderId:
             order.id,
 
@@ -2647,10 +2912,39 @@ export async function POST(
 
       confirmationEmailSent =
         true;
+
+      auditInfo(
+        auditContext,
+        "order.email_sent",
+        {
+          orderId:
+            order.id,
+
+          orderNumber:
+            order.number,
+        },
+      );
     } catch (emailError) {
+      auditError(
+        auditContext,
+        "order.email_failed",
+        emailError,
+        {
+          orderId:
+            order.id,
+
+          orderNumber:
+            order.number,
+        },
+      );
+
       console.error(
         "Order confirmation email failed:",
         {
+          requestId:
+            auditContext
+              .requestId,
+
           orderId:
             order.id,
 
@@ -2671,6 +2965,10 @@ export async function POST(
 
       message:
         "Your order was placed successfully.",
+
+      requestId:
+        auditContext
+          .requestId,
 
       orderId:
         order.id,
@@ -2793,19 +3091,44 @@ export async function POST(
             successResponseBody,
         },
       });
+
+      auditInfo(
+        auditContext,
+        "order.idempotency_stored",
+        {
+          orderId:
+            order.id,
+
+          fingerprintReference,
+        },
+      );
     } catch (completionError) {
-      /*
-       * Order ইতোমধ্যে তৈরি হয়েছে। Redis
-       * completion failure-এর জন্য customer-কে
-       * order failure দেখানো যাবে না।
-       */
       successResponseBody
         .idempotencyStored =
         false;
 
+      auditError(
+        auditContext,
+        "order.idempotency_store_failed",
+        completionError,
+        {
+          orderId:
+            order.id,
+
+          orderNumber:
+            order.number,
+
+          fingerprintReference,
+        },
+      );
+
       console.error(
         "Order idempotency completion failed after order creation:",
         {
+          requestId:
+            auditContext
+              .requestId,
+
           orderId:
             order.id,
 
@@ -2819,6 +3142,32 @@ export async function POST(
         },
       );
     }
+
+    auditInfo(
+      auditContext,
+      "request.completed",
+      {
+        status: 201,
+
+        outcome:
+          "order_created",
+
+        orderId:
+          order.id,
+
+        orderNumber:
+          order.number,
+
+        totalsVerified,
+
+        emailSent:
+          confirmationEmailSent,
+
+        idempotencyStored:
+          successResponseBody
+            .idempotencyStored,
+      },
+    );
 
     return NextResponse.json(
       successResponseBody,
@@ -2845,9 +3194,28 @@ export async function POST(
           idempotencyReservation,
         );
       } catch (releaseError) {
+        auditError(
+          auditContext,
+          "order.failed",
+          releaseError,
+          {
+            stage:
+              "idempotency_release",
+
+            subjectReference,
+          },
+        );
+
         console.error(
           "Failed to release order idempotency reservation:",
-          releaseError,
+          {
+            requestId:
+              auditContext
+                .requestId,
+
+            error:
+              releaseError,
+          },
         );
       }
     }
@@ -2856,9 +3224,58 @@ export async function POST(
       error instanceof
       OrderIdempotencyError
     ) {
+      if (
+        error.code ===
+        "idempotency_key_reused"
+      ) {
+        auditWarn(
+          auditContext,
+          "order.idempotency_conflict",
+          {
+            status:
+              error.status,
+
+            code:
+              error.code,
+
+            subjectReference,
+          },
+        );
+      } else {
+        auditError(
+          auditContext,
+          "order.failed",
+          error,
+          {
+            stage:
+              orderCreationStarted
+                ? "after_creation_started"
+                : "before_creation",
+
+            subjectReference,
+          },
+        );
+      }
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            error.status,
+
+          outcome:
+            error.code,
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           error:
             error.message,
@@ -2881,9 +3298,44 @@ export async function POST(
       error instanceof
       SecureCheckoutError
     ) {
+      auditWarn(
+        auditContext,
+        "order.validation_failed",
+        {
+          status:
+            error.status,
+
+          code:
+            error.code,
+
+          subjectReference,
+
+          detailPresent:
+            Boolean(
+              error.details,
+            ),
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            error.status,
+
+          outcome:
+            error.code,
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           error:
             error.message,
@@ -2913,9 +3365,39 @@ export async function POST(
       error instanceof
       OrderRequestError
     ) {
+      auditWarn(
+        auditContext,
+        "request.rejected",
+        {
+          status:
+            error.status,
+
+          code:
+            error.code,
+
+          subjectReference,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            error.status,
+
+          outcome:
+            error.code,
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           error:
             error.message,
@@ -2939,15 +3421,57 @@ export async function POST(
         ? error.message
         : "Unknown order creation error.";
 
+    auditError(
+      auditContext,
+      "order.failed",
+      error,
+      {
+        stage:
+          orderCreationStarted
+            ? "after_creation_started"
+            : "before_creation",
+
+        subjectReference,
+
+        reservationAcquired:
+          Boolean(
+            idempotencyReservation,
+          ),
+      },
+    );
+
+    auditInfo(
+      auditContext,
+      "request.completed",
+      {
+        status: 502,
+
+        outcome:
+          "order_creation_failed",
+      },
+    );
+
     console.error(
       "WooCommerce order creation failed:",
-      errorMessage,
-      error,
+      {
+        requestId:
+          auditContext
+            .requestId,
+
+        message:
+          errorMessage,
+
+        error,
+      },
     );
 
     return NextResponse.json(
       {
         success: false,
+
+        requestId:
+          auditContext
+            .requestId,
 
         error:
           process.env.NODE_ENV ===

@@ -6,11 +6,25 @@ import {
 import { auth } from "@/auth";
 
 import {
+  checkOrderStatusRateLimit,
+  getCheckoutRateLimitHeaders,
+} from "@/lib/checkout-rate-limit";
+
+import {
   createOrderIdempotencyScope,
   getOrderIdempotencyStatus,
   OrderIdempotencyError,
   readOrderIdempotencyKey,
 } from "@/lib/order-idempotency";
+
+import {
+  auditError,
+  auditInfo,
+  auditWarn,
+  createRequestAuditContext,
+  getRequestAuditHeaders,
+  hashAuditIdentifier,
+} from "@/lib/request-audit";
 
 export const runtime =
   "nodejs";
@@ -22,8 +36,8 @@ export const dynamic =
    Configuration
 ========================================================= */
 
-const MAX_STATUS_BODY_SIZE =
-  5_000;
+const MAX_REQUEST_BODY_SIZE =
+  20_000;
 
 type UnknownRecord =
   Record<string, unknown>;
@@ -43,8 +57,11 @@ class StatusRequestError extends Error {
     this.name =
       "StatusRequestError";
 
-    this.status = status;
-    this.code = code;
+    this.status =
+      status;
+
+    this.code =
+      code;
   }
 }
 
@@ -64,40 +81,54 @@ function isObject(
 }
 
 function readString(
-  value: unknown,
+  source: UnknownRecord,
+  keys: string[],
 ): string {
-  if (
-    typeof value ===
-    "string"
+  for (
+    const key of keys
   ) {
-    return value.trim();
-  }
+    const value =
+      source[key];
 
-  if (
-    typeof value ===
-      "number" ||
-    typeof value ===
-      "boolean"
-  ) {
-    return String(value).trim();
+    if (
+      typeof value ===
+        "string"
+    ) {
+      return value.trim();
+    }
+
+    if (
+      typeof value ===
+        "number" ||
+      typeof value ===
+        "boolean"
+    ) {
+      return String(
+        value,
+      ).trim();
+    }
   }
 
   return "";
 }
 
-function normalizeEmail(
+function normalizeBillingEmail(
   value: string,
 ): string {
   return value
     .trim()
     .toLowerCase()
-    .slice(0, 200);
+    .slice(
+      0,
+      200,
+    );
 }
 
 function isValidEmail(
   value: string,
 ): boolean {
   return (
+    value.length <= 200 &&
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
       value,
     )
@@ -128,7 +159,7 @@ function getStatusResponseHeaders({
 }
 
 /* =========================================================
-   Same-origin protection
+   Origin protection
 ========================================================= */
 
 function addAllowedOrigin(
@@ -161,7 +192,7 @@ function addAllowedOrigin(
     );
   } catch {
     /*
-     * Invalid configured URL ignored.
+     * Invalid configured origin ignored.
      */
   }
 }
@@ -178,8 +209,11 @@ function isSameOrigin(
     return false;
   }
 
-  let requestOrigin: string;
-  let submittedOrigin: string;
+  let requestOrigin:
+    string;
+
+  let submittedOrigin:
+    string;
 
   try {
     requestOrigin =
@@ -235,10 +269,10 @@ function isSameOrigin(
 }
 
 /* =========================================================
-   Request body parsing
+   Request parsing
 ========================================================= */
 
-async function parseStatusBody(
+async function parseRequestBody(
   request: NextRequest,
 ): Promise<UnknownRecord> {
   const contentType =
@@ -272,7 +306,7 @@ async function parseStatusBody(
       contentLength,
     ) &&
     contentLength >
-      MAX_STATUS_BODY_SIZE
+      MAX_REQUEST_BODY_SIZE
   ) {
     throw new StatusRequestError(
       "The status request is too large.",
@@ -286,7 +320,7 @@ async function parseStatusBody(
 
   if (
     rawBody.length >
-    MAX_STATUS_BODY_SIZE
+    MAX_REQUEST_BODY_SIZE
   ) {
     throw new StatusRequestError(
       "The status request is too large.",
@@ -295,14 +329,22 @@ async function parseStatusBody(
     );
   }
 
-  if (!rawBody.trim()) {
+  /*
+   * Authenticated customer-এর recovery
+   * request-এ billing email প্রয়োজন নেই।
+   * তাই empty JSON body safely {} হবে।
+   */
+  if (
+    !rawBody.trim()
+  ) {
     return {};
   }
 
-  let parsed: unknown;
+  let parsedBody:
+    unknown;
 
   try {
-    parsed =
+    parsedBody =
       JSON.parse(
         rawBody,
       );
@@ -314,72 +356,19 @@ async function parseStatusBody(
     );
   }
 
-  if (!isObject(parsed)) {
+  if (
+    !isObject(
+      parsedBody,
+    )
+  ) {
     throw new StatusRequestError(
-      "The status request must contain a JSON object.",
+      "Invalid order status request.",
       400,
       "invalid_status_request",
     );
   }
 
-  return parsed;
-}
-
-/* =========================================================
-   Guest billing email extraction
-========================================================= */
-
-function extractBillingEmail(
-  body: UnknownRecord,
-): string {
-  const directEmail =
-    normalizeEmail(
-      readString(
-        body.billingEmail ??
-          body.billing_email ??
-          body.email,
-      ),
-    );
-
-  if (directEmail) {
-    return directEmail;
-  }
-
-  if (
-    isObject(
-      body.customer,
-    )
-  ) {
-    const customerEmail =
-      normalizeEmail(
-        readString(
-          body.customer.email,
-        ),
-      );
-
-    if (customerEmail) {
-      return customerEmail;
-    }
-  }
-
-  if (
-    isObject(
-      body.billing,
-    )
-  ) {
-    const billingEmail =
-      normalizeEmail(
-        readString(
-          body.billing.email,
-        ),
-      );
-
-    if (billingEmail) {
-      return billingEmail;
-    }
-  }
-
-  return "";
+  return parsedBody;
 }
 
 /* =========================================================
@@ -389,6 +378,73 @@ function extractBillingEmail(
 export async function POST(
   request: NextRequest,
 ) {
+  const auditContext =
+    createRequestAuditContext({
+      request,
+
+      operation:
+        "order-status",
+
+      route:
+        "/api/orders/idempotency-status",
+    });
+
+  auditInfo(
+    auditContext,
+    "request.received",
+    {
+      originPresent:
+        Boolean(
+          request.headers.get(
+            "origin",
+          ),
+        ),
+
+      idempotencyPresent:
+        Boolean(
+          request.headers.get(
+            "idempotency-key",
+          ),
+        ),
+
+      contentType:
+        request.headers
+          .get(
+            "content-type",
+          )
+          ?.split(";")[0]
+          ?.trim() ??
+        "",
+    },
+  );
+
+  let rateLimitHeaders:
+    Record<string, string> = {};
+
+  let subjectReference:
+    string | null =
+      null;
+
+  let idempotencyReference:
+    string | null =
+      null;
+
+  const buildStatusResponseHeaders = ({
+    replayed = false,
+  }: {
+    replayed?: boolean;
+  } = {}): Record<string, string> => ({
+    ...getStatusResponseHeaders({
+      replayed,
+    }),
+
+    ...getRequestAuditHeaders(
+      auditContext,
+    ),
+
+    ...rateLimitHeaders,
+  });
+
   try {
     if (
       !isSameOrigin(
@@ -407,9 +463,33 @@ export async function POST(
         request,
       );
 
-    const body =
-      await parseStatusBody(
+    /*
+     * Raw Idempotency-Key log হবে না।
+     */
+    idempotencyReference =
+      hashAuditIdentifier({
+        type:
+          "idempotency",
+
+        value:
+          idempotencyKey,
+      });
+
+    const requestBody =
+      await parseRequestBody(
         request,
+      );
+
+    const billingEmail =
+      normalizeBillingEmail(
+        readString(
+          requestBody,
+          [
+            "billingEmail",
+            "billing_email",
+            "email",
+          ],
+        ),
       );
 
     const session =
@@ -429,18 +509,9 @@ export async function POST(
         ? sessionCustomerId
         : 0;
 
-    const billingEmail =
-      extractBillingEmail(
-        body,
-      );
-
     /*
-     * Logged-in customer-এর scope customer ID
-     * দিয়ে তৈরি হবে।
-     *
-     * Guest checkout-এর ক্ষেত্রে একই billing
-     * email প্রয়োজন, যেটি original order
-     * request-এ ব্যবহার হয়েছিল।
+     * Guest recovery scope তৈরির জন্য
+     * billing email প্রয়োজন।
      */
     if (
       customerId === 0
@@ -466,31 +537,156 @@ export async function POST(
       }
     }
 
-    const scope =
-      createOrderIdempotencyScope({
+    /*
+     * Raw customer ID বা email-এর বদলে
+     * privacy-safe HMAC reference log হবে।
+     */
+    subjectReference =
+      hashAuditIdentifier({
+        type:
+          customerId > 0
+            ? "customer"
+            : "email",
+
+        value:
+          customerId > 0
+            ? customerId
+            : billingEmail,
+      });
+
+    /*
+     * Recovery polling-এর জন্য order creation
+     * route থেকে আলাদা rate-limit allowance।
+     */
+    const rateLimitResult =
+      await checkOrderStatusRateLimit({
+        request,
+
         customerId,
 
         billingEmail,
       });
 
-    /*
-     * Client-side payload fingerprint এখানে পাঠানো
-     * হচ্ছে না, কারণ সেটি server normalized
-     * fingerprint-এর সমান নয়।
-     */
+    rateLimitHeaders =
+      getCheckoutRateLimitHeaders(
+        rateLimitResult,
+      );
+
+    if (
+      !rateLimitResult.allowed
+    ) {
+      auditWarn(
+        auditContext,
+        "order_status.rate_limited",
+        {
+          subjectReference,
+          idempotencyReference,
+
+          blockedScope:
+            rateLimitResult
+              .blockedScope,
+
+          retryAfterSeconds:
+            rateLimitResult
+              .retryAfterSeconds,
+
+          degraded:
+            rateLimitResult
+              .degraded,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status: 429,
+
+          outcome:
+            "order_status_rate_limited",
+        },
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+
+          requestId:
+            auditContext
+              .requestId,
+
+          status:
+            "rate_limited",
+
+          error:
+            "Too many order status checks were received. Please wait before checking again.",
+
+          code:
+            "order_status_rate_limited",
+
+          retryAfter:
+            rateLimitResult
+              .retryAfterSeconds,
+        },
+
+        {
+          status: 429,
+
+          headers:
+            buildStatusResponseHeaders(),
+        },
+      );
+    }
+
+    const scope =
+      createOrderIdempotencyScope({
+        customerId,
+
+        billingEmail:
+          billingEmail ||
+          undefined,
+      });
+
     const status =
       await getOrderIdempotencyStatus({
         idempotencyKey,
         scope,
       });
 
+    /*
+     * No Redis record exists for this scope/key.
+     */
     if (
       status.kind ===
       "not_found"
     ) {
+      auditWarn(
+        auditContext,
+        "order_status.not_found",
+        {
+          subjectReference,
+          idempotencyReference,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status: 404,
+
+          outcome:
+            "order_attempt_not_found",
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           status:
             "not_found",
@@ -506,18 +702,48 @@ export async function POST(
           status: 404,
 
           headers:
-            getStatusResponseHeaders(),
+            buildStatusResponseHeaders(),
         },
       );
     }
 
+    /*
+     * Order creation request এখনো processing।
+     */
     if (
       status.kind ===
       "in_progress"
     ) {
+      auditInfo(
+        auditContext,
+        "order_status.in_progress",
+        {
+          subjectReference,
+          idempotencyReference,
+
+          createdAt:
+            status.createdAt,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status: 202,
+
+          outcome:
+            "order_still_processing",
+        },
+      );
+
       return NextResponse.json(
         {
           success: true,
+
+          requestId:
+            auditContext
+              .requestId,
 
           status:
             "in_progress",
@@ -533,7 +759,7 @@ export async function POST(
           status: 202,
 
           headers: {
-            ...getStatusResponseHeaders(),
+            ...buildStatusResponseHeaders(),
 
             "Retry-After":
               "2",
@@ -543,14 +769,86 @@ export async function POST(
     }
 
     /*
-     * Completed response recovery।
-     *
-     * নতুন WooCommerce order তৈরি হবে না।
+     * Completed Redis response recovery।
      */
+    const cachedResponseBody =
+      status.response.body;
+
+    const recoveredOrderId =
+      typeof cachedResponseBody
+        .orderId === "number"
+        ? cachedResponseBody
+            .orderId
+        : null;
+
+    /*
+     * Cached response-এর requestId original
+     * order-creation request-এর correlation ID।
+     */
+    const originalOrderRequestId =
+      typeof cachedResponseBody
+        .requestId === "string" &&
+      cachedResponseBody
+        .requestId
+        .trim()
+        ? cachedResponseBody
+            .requestId
+            .trim()
+        : null;
+
+    auditInfo(
+      auditContext,
+      "order_status.completed",
+      {
+        subjectReference,
+        idempotencyReference,
+
+        orderId:
+          recoveredOrderId,
+
+        originalResponseStatus:
+          status.response.status,
+
+        completedAt:
+          status.completedAt,
+
+        originalOrderRequestId,
+      },
+    );
+
+    auditInfo(
+      auditContext,
+      "request.completed",
+      {
+        status: 200,
+
+        outcome:
+          "order_recovered",
+
+        orderId:
+          recoveredOrderId,
+      },
+    );
+
     return NextResponse.json(
       {
-        ...status.response
-          .body,
+        ...cachedResponseBody,
+
+        /*
+         * Current recovery API request ID।
+         */
+        requestId:
+          auditContext
+            .requestId,
+
+        /*
+         * Original order-creation request ID।
+         */
+        ...(originalOrderRequestId
+          ? {
+              originalOrderRequestId,
+            }
+          : {}),
 
         idempotencyRecovered:
           true,
@@ -562,7 +860,8 @@ export async function POST(
           "completed",
 
         recoveredAt:
-          new Date().toISOString(),
+          new Date()
+            .toISOString(),
 
         originalResponseStatus:
           status.response.status,
@@ -575,7 +874,7 @@ export async function POST(
         status: 200,
 
         headers:
-          getStatusResponseHeaders({
+          buildStatusResponseHeaders({
             replayed: true,
           }),
       },
@@ -585,9 +884,57 @@ export async function POST(
       error instanceof
       OrderIdempotencyError
     ) {
+      if (
+        error.status >= 500
+      ) {
+        auditError(
+          auditContext,
+          "order_status.failed",
+          error,
+          {
+            subjectReference,
+            idempotencyReference,
+
+            stage:
+              "idempotency_lookup",
+          },
+        );
+      } else {
+        auditWarn(
+          auditContext,
+          "order_status.failed",
+          {
+            subjectReference,
+            idempotencyReference,
+
+            status:
+              error.status,
+
+            code:
+              error.code,
+          },
+        );
+      }
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            error.status,
+
+          outcome:
+            error.code,
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           error:
             error.message,
@@ -601,7 +948,7 @@ export async function POST(
             error.status,
 
           headers:
-            getStatusResponseHeaders(),
+            buildStatusResponseHeaders(),
         },
       );
     }
@@ -610,9 +957,40 @@ export async function POST(
       error instanceof
       StatusRequestError
     ) {
+      auditWarn(
+        auditContext,
+        "request.rejected",
+        {
+          subjectReference,
+          idempotencyReference,
+
+          status:
+            error.status,
+
+          code:
+            error.code,
+        },
+      );
+
+      auditInfo(
+        auditContext,
+        "request.completed",
+        {
+          status:
+            error.status,
+
+          outcome:
+            error.code,
+        },
+      );
+
       return NextResponse.json(
         {
           success: false,
+
+          requestId:
+            auditContext
+              .requestId,
 
           error:
             error.message,
@@ -626,19 +1004,56 @@ export async function POST(
             error.status,
 
           headers:
-            getStatusResponseHeaders(),
+            buildStatusResponseHeaders(),
         },
       );
     }
 
-    console.error(
-      "Order idempotency status request failed:",
+    auditError(
+      auditContext,
+      "order_status.failed",
       error,
+      {
+        subjectReference,
+        idempotencyReference,
+
+        stage:
+          "unexpected_failure",
+      },
+    );
+
+    auditInfo(
+      auditContext,
+      "request.completed",
+      {
+        status: 500,
+
+        outcome:
+          "order_status_check_failed",
+      },
+    );
+
+    console.error(
+      "Order idempotency status check failed:",
+      {
+        requestId:
+          auditContext
+            .requestId,
+
+        error:
+          error instanceof Error
+            ? error.message
+            : error,
+      },
     );
 
     return NextResponse.json(
       {
         success: false,
+
+        requestId:
+          auditContext
+            .requestId,
 
         error:
           "The order status could not be checked. Please try again.",
@@ -651,7 +1066,7 @@ export async function POST(
         status: 500,
 
         headers:
-          getStatusResponseHeaders(),
+          buildStatusResponseHeaders(),
       },
     );
   }

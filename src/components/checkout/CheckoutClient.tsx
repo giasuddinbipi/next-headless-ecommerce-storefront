@@ -74,20 +74,14 @@ type RecoveryResult =
 const ORDER_ATTEMPT_STORAGE_KEY =
   "checkout-order-attempt-v1";
 
-/*
- * Redis completed record সাত দিন রাখা হয়।
- * Browser recovery record-ও সর্বোচ্চ সাত দিন থাকবে।
- */
 const ORDER_ATTEMPT_MAX_AGE_MS =
   7 * 24 * 60 * 60 * 1_000;
 
-/*
- * Processing lock 24 ঘণ্টা থাকে।
- * এর চেয়ে পুরোনো unresolved attempt manually
- * clear করার option পাবে।
- */
 const ORDER_ATTEMPT_STALE_AFTER_MS =
   24 * 60 * 60 * 1_000;
+
+const REQUEST_ID_PATTERN =
+  /^[A-Za-z0-9._:-]+$/;
 
 /* =========================================================
    General helpers
@@ -166,6 +160,60 @@ function getRecoveryStatus(
   }
 
   return "";
+}
+
+function normalizeRequestId(
+  value: unknown,
+): string {
+  if (
+    typeof value !==
+    "string"
+  ) {
+    return "";
+  }
+
+  const normalized =
+    value.trim();
+
+  if (
+    normalized.length < 8 ||
+    normalized.length > 128 ||
+    !REQUEST_ID_PATTERN.test(
+      normalized,
+    )
+  ) {
+    return "";
+  }
+
+  return normalized;
+}
+
+function getResponseRequestId(
+  response: Response,
+  data: unknown,
+): string {
+  /*
+   * Response body-এর requestId আগে নেওয়া হবে।
+   * Body-তে না থাকলে X-Request-Id header।
+   */
+  if (
+    isObject(data)
+  ) {
+    const bodyRequestId =
+      normalizeRequestId(
+        data.requestId,
+      );
+
+    if (bodyRequestId) {
+      return bodyRequestId;
+    }
+  }
+
+  return normalizeRequestId(
+    response.headers.get(
+      "x-request-id",
+    ),
+  );
 }
 
 function getRetryAfterSeconds(
@@ -437,10 +485,6 @@ function readStoredOrderAttempt():
       return null;
     }
 
-    /*
-     * Redis recovery retention-এর চেয়ে
-     * পুরোনো browser attempt remove হবে।
-     */
     if (
       isOrderAttemptExpired(
         parsedValue,
@@ -570,6 +614,16 @@ export default function CheckoutClient({
   ] = useState("");
 
   const [
+    supportRequestId,
+    setSupportRequestId,
+  ] = useState("");
+
+  const [
+    supportReferenceCopied,
+    setSupportReferenceCopied,
+  ] = useState(false);
+
+  const [
     orderResult,
     setOrderResult,
   ] =
@@ -639,10 +693,6 @@ export default function CheckoutClient({
         );
 
         try {
-          /*
-           * Processing response পেলে সর্বোচ্চ
-           * পাঁচবার bounded polling হবে।
-           */
           const maximumChecks =
             5;
 
@@ -697,13 +747,20 @@ export default function CheckoutClient({
                   () => null,
                 );
 
-            /*
-             * Completed order result recovered।
-             */
+            const responseRequestId =
+              getResponseRequestId(
+                response,
+                data,
+              );
+
             if (
               response.ok &&
               isOrderResult(data)
             ) {
+              setSupportRequestId(
+                "",
+              );
+
               clearOrderAttempt();
 
               setErrorMessage(
@@ -738,19 +795,16 @@ export default function CheckoutClient({
                 data,
               );
 
-            /*
-             * Recovery status endpoint rate limited।
-             *
-             * Saved attempt clear করা হবে না।
-             * Customer অপেক্ষার পরে একই attempt
-             * manually check করতে পারবে।
-             */
             if (
               response.status ===
                 429 &&
               errorCode ===
                 "order_status_rate_limited"
             ) {
+              setSupportRequestId(
+                responseRequestId,
+              );
+
               const retryAfter =
                 getRetryAfterSeconds(
                   response,
@@ -766,16 +820,16 @@ export default function CheckoutClient({
               return "unavailable";
             }
 
-            /*
-             * Order এখনো processing হলে দুই
-             * সেকেন্ড পরে status আবার check হবে।
-             */
             if (
               response.status ===
                 202 &&
               status ===
                 "in_progress"
             ) {
+              setSupportRequestId(
+                "",
+              );
+
               setRecoveryMessage(
                 "Your order is still being processed. Please keep this page open.",
               );
@@ -800,18 +854,16 @@ export default function CheckoutClient({
               return "in_progress";
             }
 
-            /*
-             * Redis-এ matching result পাওয়া যায়নি।
-             * Automaticভাবে new order submit করা
-             * হবে না। Customer history check করে
-             * attempt manually clear করবে।
-             */
             if (
               response.status ===
                 404 &&
               errorCode ===
                 "order_attempt_not_found"
             ) {
+              setSupportRequestId(
+                responseRequestId,
+              );
+
               setAllowAttemptCleanup(
                 true,
               );
@@ -823,16 +875,16 @@ export default function CheckoutClient({
               return "not_found";
             }
 
-            /*
-             * Scope/key conflict হলে unusable
-             * stored attempt remove হবে।
-             */
             if (
               response.status ===
                 409 &&
               errorCode ===
                 "idempotency_key_reused"
             ) {
+              setSupportRequestId(
+                responseRequestId,
+              );
+
               clearOrderAttempt();
 
               setRecoveryMessage(
@@ -845,6 +897,10 @@ export default function CheckoutClient({
 
               return "conflict";
             }
+
+            setSupportRequestId(
+              responseRequestId,
+            );
 
             throw new Error(
               responseError,
@@ -903,6 +959,10 @@ export default function CheckoutClient({
         ) {
           return;
         }
+
+        setSupportRequestId(
+          "",
+        );
 
         const storedAttempt =
           orderAttemptRef.current ??
@@ -971,6 +1031,10 @@ export default function CheckoutClient({
 
       clearOrderAttempt();
 
+      setSupportRequestId(
+        "",
+      );
+
       setRecoveryMessage(
         "",
       );
@@ -983,6 +1047,46 @@ export default function CheckoutClient({
       recoveringOrder,
       submitting,
     ]);
+
+  const handleCopySupportReference =
+    useCallback(
+      async (): Promise<void> => {
+        if (
+          !supportRequestId
+        ) {
+          return;
+        }
+
+        try {
+          await navigator.clipboard.writeText(
+            supportRequestId,
+          );
+
+          setSupportReferenceCopied(
+            true,
+          );
+        } catch {
+          setSupportReferenceCopied(
+            false,
+          );
+
+          setErrorMessage(
+            "The support reference could not be copied automatically. Please copy it manually.",
+          );
+        }
+      },
+      [
+        supportRequestId,
+      ],
+    );
+
+  useEffect(() => {
+    setSupportReferenceCopied(
+      false,
+    );
+  }, [
+    supportRequestId,
+  ]);
 
   useEffect(() => {
     setMounted(true);
@@ -1014,10 +1118,6 @@ export default function CheckoutClient({
     const controller =
       new AbortController();
 
-    /*
-     * Page reload-এর পরে unresolved attempt
-     * automatically recover হবে।
-     */
     void recoverPendingOrder(
       storedAttempt,
       controller.signal,
@@ -1081,11 +1181,6 @@ export default function CheckoutClient({
         return;
       }
 
-      /*
-       * Not-found অথবা stale attempt manually
-       * resolve না করা পর্যন্ত new submission
-       * block থাকবে।
-       */
       if (
         hasRecoverableAttempt &&
         allowAttemptCleanup
@@ -1110,6 +1205,7 @@ export default function CheckoutClient({
       setSubmitting(true);
       setErrorMessage("");
       setRecoveryMessage("");
+      setSupportRequestId("");
 
       const formData =
         new FormData(
@@ -1181,13 +1277,6 @@ export default function CheckoutClient({
           ),
       };
 
-      /*
-       * Browser price, subtotal, discount,
-       * shipping total অথবা final total পাঠাবে না।
-       *
-       * Server product IDs, quantities ও selected
-       * attributes দিয়ে fresh calculation করবে।
-       */
       const requestBody = {
         customer,
 
@@ -1205,10 +1294,6 @@ export default function CheckoutClient({
             "termsAccepted",
           ) === "on",
 
-        /*
-         * Checkout form-এ coupon input না থাকলে
-         * empty coupon code পাঠানো হবে।
-         */
         couponCode: "",
 
         items:
@@ -1252,10 +1337,6 @@ export default function CheckoutClient({
         OrderAttempt | null =
           null;
 
-      /*
-       * একই submit cycle-এ একই failure-এর জন্য
-       * recovery endpoint বারবার call হবে না।
-       */
       let recoveryAttempted =
         false;
 
@@ -1269,11 +1350,6 @@ export default function CheckoutClient({
           orderAttemptRef.current ??
           readStoredOrderAttempt();
 
-        /*
-         * Previous unresolved attempt current
-         * payload থেকে আলাদা হলে আগে previous
-         * attempt-এর status check হবে।
-         */
         if (
           orderAttempt &&
           orderAttempt.fingerprint !==
@@ -1312,10 +1388,6 @@ export default function CheckoutClient({
             );
           }
 
-          /*
-           * Not-found result manually clear করা
-           * ছাড়া different payload submit হবে না।
-           */
           if (
             recoveryResult ===
             "not_found"
@@ -1325,10 +1397,6 @@ export default function CheckoutClient({
             );
           }
 
-          /*
-           * Conflict handler attempt ইতোমধ্যে
-           * safely clear করেছে।
-           */
           orderAttempt =
             null;
         }
@@ -1412,6 +1480,12 @@ export default function CheckoutClient({
               () => null,
             );
 
+        const responseRequestId =
+          getResponseRequestId(
+            response,
+            data,
+          );
+
         const responseError =
           getErrorMessage(
             data,
@@ -1423,13 +1497,10 @@ export default function CheckoutClient({
           );
 
         if (!response.ok) {
-          /*
-           * Order-creation rate limit idempotency
-           * reservation-এর আগেই check হয়েছে।
-           *
-           * তাই current attempt safely clear করে
-           * অপেক্ষার পরে fresh submission হবে।
-           */
+          setSupportRequestId(
+            responseRequestId,
+          );
+
           if (
             response.status ===
               429 &&
@@ -1454,10 +1525,6 @@ export default function CheckoutClient({
             );
           }
 
-          /*
-           * Same request processing হলে status
-           * endpoint দিয়ে recovery হবে।
-           */
           if (
             errorCode ===
             "order_request_in_progress"
@@ -1482,10 +1549,6 @@ export default function CheckoutClient({
             );
           }
 
-          /*
-           * Same key ভিন্ন payload-এর সঙ্গে
-           * ব্যবহার হলে fresh attempt প্রয়োজন।
-           */
           if (
             errorCode ===
             "idempotency_key_reused"
@@ -1500,10 +1563,6 @@ export default function CheckoutClient({
             );
           }
 
-          /*
-           * Product, stock অথবা quantity বদলে
-           * গেলে cart page-এ validation review।
-           */
           if (
             response.status ===
               409 &&
@@ -1535,10 +1594,6 @@ export default function CheckoutClient({
             return;
           }
 
-          /*
-           * Uncertain 5xx response-এর পরে
-           * completed result recovery চেষ্টা।
-           */
           if (
             response.status >=
             500
@@ -1559,12 +1614,6 @@ export default function CheckoutClient({
             }
           }
 
-          /*
-           * নিশ্চিত 4xx validation failure হলে
-           * fresh submission key পাওয়া যাবে।
-           *
-           * 5xx response-এর key রাখা হবে।
-           */
           if (
             response.status >=
               400 &&
@@ -1585,14 +1634,18 @@ export default function CheckoutClient({
         if (
           !isOrderResult(data)
         ) {
-          /*
-           * HTTP success হলেও malformed response
-           * uncertain result হিসেবে ধরা হবে।
-           */
+          setSupportRequestId(
+            responseRequestId,
+          );
+
           throw new Error(
             "The server returned an invalid order response.",
           );
         }
+
+        setSupportRequestId(
+          "",
+        );
 
         clearOrderAttempt();
 
@@ -1609,11 +1662,6 @@ export default function CheckoutClient({
 
         clearCart();
       } catch (error) {
-        /*
-         * Network failure হলেও server order
-         * তৈরি করে থাকতে পারে। Status recovery
-         * দিয়ে result verify করা হবে।
-         */
         if (
           activeOrderAttempt &&
           !recoveryAttempted
@@ -1665,9 +1713,8 @@ export default function CheckoutClient({
           </h1>
 
           <p className="mt-3 text-gray-600">
-            Thank you. Your Cash on
-            Delivery order has been
-            submitted.
+            Thank you. Your Cash on Delivery
+            order has been submitted.
           </p>
 
           <div className="mt-7 rounded-xl bg-gray-50 p-5 text-left">
@@ -1677,10 +1724,7 @@ export default function CheckoutClient({
               </span>
 
               <span className="font-bold text-gray-900">
-                #
-                {
-                  orderResult.orderNumber
-                }
+                #{orderResult.orderNumber}
               </span>
             </div>
 
@@ -1731,10 +1775,6 @@ export default function CheckoutClient({
     );
   }
 
-  /*
-   * Saved recovery attempt থাকলে empty cart
-   * হলেও recovery controls দেখানো হবে।
-   */
   if (
     items.length === 0 &&
     !recoveringOrder &&
@@ -1748,8 +1788,7 @@ export default function CheckoutClient({
           </h1>
 
           <p className="mt-3 text-gray-600">
-            Add products before opening
-            checkout.
+            Add products before opening checkout.
           </p>
 
           <Link
@@ -1782,8 +1821,7 @@ export default function CheckoutClient({
         </h1>
 
         <p className="mt-3 text-gray-600">
-          Complete your delivery
-          information.
+          Complete your delivery information.
         </p>
 
         {hasSavedAddress && (
@@ -1791,10 +1829,9 @@ export default function CheckoutClient({
             role="status"
             className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800"
           >
-            Your saved delivery address
-            has been loaded. Please review
-            the information before placing
-            the order.
+            Your saved delivery address has been
+            loaded. Please review the information
+            before placing the order.
           </div>
         )}
 
@@ -2108,10 +2145,9 @@ export default function CheckoutClient({
             <div className="mt-6 max-h-72 space-y-4 overflow-y-auto">
               {items.length === 0 ? (
                 <p className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
-                  The cart is currently
-                  empty. Use the recovery
-                  controls below to check
-                  the saved order attempt.
+                  The cart is currently empty. Use
+                  the recovery controls below to
+                  check the saved order attempt.
                 </p>
               ) : (
                 items.map(
@@ -2146,9 +2182,7 @@ export default function CheckoutClient({
 
                         <p className="mt-1 text-gray-500">
                           Quantity:{" "}
-                          {
-                            item.quantity
-                          }
+                          {item.quantity}
                         </p>
                       </div>
 
@@ -2205,16 +2239,14 @@ export default function CheckoutClient({
             </div>
 
             <p className="mt-3 text-xs leading-5 text-gray-500">
-              Product prices, stock,
-              discount and final payable
-              total will be verified by
-              the server before the order
-              is created.
+              Product prices, stock, discount and
+              final payable total will be verified
+              by the server before the order is
+              created.
             </p>
 
             <div className="mt-5 rounded-lg bg-yellow-50 p-4 text-sm text-yellow-800">
-              Payment method: Cash on
-              Delivery
+              Payment method: Cash on Delivery
             </div>
 
             {(
@@ -2274,11 +2306,9 @@ export default function CheckoutClient({
 
                 {allowAttemptCleanup && (
                   <p className="mt-3 text-xs leading-5 text-blue-800">
-                    Check your account
-                    order history and
-                    confirmation email
-                    before clearing this
-                    saved attempt.
+                    Check your account order history
+                    and confirmation email before
+                    clearing this saved attempt.
                   </p>
                 )}
               </div>
@@ -2290,6 +2320,38 @@ export default function CheckoutClient({
                 className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700"
               >
                 {errorMessage}
+              </div>
+            )}
+
+            {supportRequestId && (
+              <div className="mt-4 rounded-lg border border-gray-300 bg-gray-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Support reference
+                </p>
+
+                <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <code className="break-all rounded bg-white px-3 py-2 text-xs font-semibold text-gray-900">
+                    {supportRequestId}
+                  </code>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleCopySupportReference();
+                    }}
+                    className="shrink-0 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100"
+                  >
+                    {supportReferenceCopied
+                      ? "Copied"
+                      : "Copy reference"}
+                  </button>
+                </div>
+
+                <p className="mt-3 text-xs leading-5 text-gray-600">
+                  Share this reference with customer
+                  support so the failed request can
+                  be located in the server logs.
+                </p>
               </div>
             )}
 
@@ -2305,10 +2367,9 @@ export default function CheckoutClient({
               />
 
               <span>
-                I confirm that the order
-                and delivery information
-                is correct and agree to
-                the store terms.
+                I confirm that the order and
+                delivery information is correct and
+                agree to the store terms.
               </span>
             </label>
 
