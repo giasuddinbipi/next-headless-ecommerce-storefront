@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+
     "lint": "eslint",
     "test": "vitest",
     "test:run": "vitest run",
     "test:security": "vitest run tests/security",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:security:coverage": "vitest run tests/security --coverage",
+    "test:verify": "npm run test:security:coverage && npm run build"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
@@ -37,7 +40,6 @@
     "jsdom": "^29.1.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.1.10"
   }
 }

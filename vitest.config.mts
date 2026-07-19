@@ -8,28 +8,30 @@ import {
   defineConfig,
 } from "vitest/config";
 
-import tsconfigPaths from "vite-tsconfig-paths";
-
 export default defineConfig({
   plugins: [
     /*
-     * tsconfig.json-এর @/* path alias
-     * test files-এ resolve করবে।
-     */
-    tsconfigPaths(),
-
-    /*
      * CheckoutClient-এর মতো TSX component
-     * test করার জন্য React transform।
+     * transform করার জন্য React plugin।
      */
     react(),
   ],
 
   resolve: {
+    /*
+     * Vite-এর native tsconfig path resolution।
+     *
+     * tsconfig.json-এর @/* alias test files-এ
+     * resolve করবে।
+     */
+    tsconfigPaths:
+      true,
+
     alias: {
       /*
-       * Next.js server-only modules যেন
-       * Vitest Node environment-এ import হয়।
+       * Next.js-এর server-only package
+       * Vitest Node environment-এ import
+       * করার জন্য intentional test mock।
        */
       "server-only":
         fileURLToPath(
@@ -43,16 +45,12 @@ export default defineConfig({
 
   test: {
     /*
-     * Security tests প্রধানত API route এবং
-     * server utility test করবে।
+     * API routes এবং server utilities-এর
+     * default test environment।
      */
     environment:
       "node",
 
-    /*
-     * Test functions প্রত্যেক test file-এ
-     * explicitly import করা হবে।
-     */
     globals:
       false,
 
@@ -72,10 +70,6 @@ export default defineConfig({
       "e2e/**",
     ],
 
-    /*
-     * একটি test-এর mock অন্য test-এ
-     * accidentalভাবে ব্যবহার হবে না।
-     */
     clearMocks:
       true,
 
@@ -98,7 +92,7 @@ export default defineConfig({
       10_000,
 
     /*
-     * CI-তে accidental test.only commit
+     * CI-তে accidental test.only
      * test suite fail করবে।
      */
     allowOnly:
@@ -121,13 +115,25 @@ export default defineConfig({
         "./coverage",
 
       /*
-       * Task 48-এর security-critical files।
+       * শুধু checkout security-critical
+       * production files coverage report-এ
+       * অন্তর্ভুক্ত হবে।
+       *
+       * Vitest 4-এ explicit coverage.include
+       * ব্যবহার করলে uncovered matching files-ও
+       * report-এর অংশ হয়।
        */
       include: [
         "src/app/api/orders/route.ts",
+
         "src/app/api/orders/idempotency-status/route.ts",
+
+        "src/components/checkout/CheckoutClient.tsx",
+
         "src/lib/order-idempotency.ts",
+
         "src/lib/checkout-rate-limit.ts",
+
         "src/lib/request-audit.ts",
       ],
 
@@ -136,6 +142,26 @@ export default defineConfig({
         "**/*.test.{ts,tsx}",
         "src/test/**",
       ],
+
+      /*
+       * Initial security coverage gate।
+       *
+       * নতুন untested code যোগ হয়ে coverage
+       * এই সীমার নিচে গেলে command fail করবে।
+       */
+      thresholds: {
+        statements:
+          65,
+
+        branches:
+          50,
+
+        functions:
+          65,
+
+        lines:
+          65,
+      },
     },
   },
 });
