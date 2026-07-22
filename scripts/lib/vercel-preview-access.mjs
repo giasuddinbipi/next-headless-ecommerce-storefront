@@ -5,6 +5,9 @@
 const MAXIMUM_BYPASS_SECRET_LENGTH =
   2_048;
 
+const HEADER_SAFE_ASCII_PATTERN =
+  /^[\x21-\x7E]+$/;
+
 /* =========================================================
    Secret normalization
 ========================================================= */
@@ -36,12 +39,12 @@ function normalizeBypassSecret(
   }
 
   if (
-    /[\r\n]/.test(
+    !HEADER_SAFE_ASCII_PATTERN.test(
       normalized,
     )
   ) {
     throw new Error(
-      "Vercel protection bypass secret contains invalid control characters.",
+      "Vercel protection bypass secret contains characters that are unsafe for an HTTP header.",
     );
   }
 
@@ -64,16 +67,14 @@ export function createVercelPreviewAccessHeaders(
     return {};
   }
 
+  /*
+   * The automation verifier sends the bypass secret on
+   * every request, so it does not need a persistent bypass
+   * cookie or a cookie-establishing redirect flow.
+   */
   return {
     "x-vercel-protection-bypass":
       normalizedSecret,
-
-    /*
-     * Lets Vercel establish the bypass cookie when the
-     * deployment flow requires subsequent navigation.
-     */
-    "x-vercel-set-bypass-cookie":
-      "true",
   };
 }
 
