@@ -6,6 +6,12 @@ import {
   validateCspDeploymentHeaders,
 } from "./lib/csp-deployment-verifier.mjs";
 
+
+import {
+  createVercelPreviewAccessHeaders,
+  hasVercelPreviewAccessSecret,
+} from "./lib/vercel-preview-access.mjs";
+
 /* =========================================================
    Environment loading
 ========================================================= */
@@ -302,15 +308,17 @@ async function fetchWithTimeout(
           controller.signal,
 
         headers: {
-          Accept:
-            "text/html,application/xhtml+xml",
+  Accept:
+    "text/html,application/xhtml+xml",
 
-          "Cache-Control":
-            "no-cache",
+  "Cache-Control":
+    "no-cache",
 
-          "User-Agent":
-            "storefront-csp-deployment-verifier/1.0",
-        },
+  "User-Agent":
+    "storefront-csp-deployment-verifier/1.0",
+
+  ...previewAccessHeaders,
+},
       },
     );
   } finally {
@@ -621,6 +629,23 @@ const isProductionTarget =
     parsedBaseUrl.hostname,
   );
 
+const previewBypassSecret =
+  readFirstNonEmptyEnvironmentValue([
+    "CSP_VERIFY_BYPASS_SECRET",
+    "VERCEL_AUTOMATION_BYPASS_SECRET",
+  ]);
+
+const previewAccessHeaders =
+  createVercelPreviewAccessHeaders(
+    previewBypassSecret,
+  );
+
+const previewProtectionBypassConfigured =
+  hasVercelPreviewAccessSecret(
+    previewBypassSecret,
+  );
+
+
 /* =========================================================
    Main execution
 ========================================================= */
@@ -633,6 +658,14 @@ async function main() {
   console.log(
     `Base URL: ${baseUrl}`,
   );
+
+console.log(
+  `Preview protection bypass: ${
+    previewProtectionBypassConfigured
+      ? "configured"
+      : "not configured"
+  }`,
+);
 
   console.log(
     `Expected mode: ${expectedMode}`,
