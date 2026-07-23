@@ -15,7 +15,8 @@
     "test:verify": "npm run test:security:coverage && npm run build",
     "health:verify": "node scripts/verify-checkout-health.mjs",
     "csp:audit": "node scripts/audit-production-csp.mjs",
-    "csp:verify-deployment": "node scripts/verify-csp-deployment.mjs"
+    "csp:verify-deployment": "node scripts/verify-csp-deployment.mjs",
+    "csp:verify-strict": "node scripts/verify-strict-csp-deployment.mjs"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
