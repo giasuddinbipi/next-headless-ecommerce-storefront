@@ -28,10 +28,15 @@ const isExternalTarget =
     externalBaseUrl,
   );
 
+const previewBypassSecret =
+  process.env
+    .STRICT_CSP_VERIFY_BYPASS_SECRET
+    ?.trim();
+
 /*
  * Playwright webServer.env requires string values.
- * Remove undefined entries while preserving the current
- * environment for the spawned local Next.js process.
+ * Remove undefined values while preserving the current
+ * environment for the local Next.js process.
  */
 const inheritedEnvironment =
   Object.fromEntries(
@@ -47,7 +52,43 @@ const inheritedEnvironment =
         typeof entry[1] ===
         "string",
     ),
-  );
+  ) as Record<
+    string,
+    string
+  >;
+
+/*
+ * Headers used only for external Preview or Production
+ * deployments.
+ *
+ * x-vercel-skip-toolbar prevents Vercel Toolbar resources
+ * from interfering with strict CSP tests.
+ *
+ * The protection-bypass headers allow Playwright to access
+ * protected Preview deployments.
+ */
+const externalExtraHttpHeaders:
+  Record<
+    string,
+    string
+  > |
+  undefined =
+  isExternalTarget
+    ? {
+        "x-vercel-skip-toolbar":
+          "1",
+
+        ...(previewBypassSecret
+          ? {
+              "x-vercel-protection-bypass":
+                previewBypassSecret,
+
+              "x-vercel-set-bypass-cookie":
+                "true",
+            }
+          : {}),
+      }
+    : undefined;
 
 /* =========================================================
    Playwright configuration
@@ -61,10 +102,10 @@ export default defineConfig({
     "./test-results",
 
   /*
-   * Local E2E tests may run in parallel.
+   * Local tests can run in parallel.
    *
-   * External deployment tests run sequentially to avoid
-   * sending multiple expensive SSR requests at once.
+   * External deployments run sequentially to avoid several
+   * expensive SSR requests running simultaneously.
    */
   fullyParallel:
     !isExternalTarget,
@@ -118,6 +159,13 @@ export default defineConfig({
     baseURL:
       baseUrl,
 
+    /*
+     * For external deployments this disables Vercel Toolbar
+     * and authenticates protected Preview requests.
+     */
+    extraHTTPHeaders:
+      externalExtraHttpHeaders,
+
     trace:
       "retain-on-failure",
 
@@ -155,10 +203,10 @@ export default defineConfig({
   ],
 
   /*
-   * When E2E_BASE_URL is configured, Playwright tests the
-   * external deployment and does not start a local server.
+   * When E2E_BASE_URL exists, Playwright tests that external
+   * deployment and does not start a local server.
    *
-   * Otherwise, it builds the application and starts a
+   * Otherwise, Playwright builds the project and starts a
    * production Next.js server on port 3100.
    */
   webServer:
@@ -187,8 +235,8 @@ export default defineConfig({
             ...inheritedEnvironment,
 
             /*
-             * Trust the isolated local E2E server host so
-             * Auth.js session requests do not return 500.
+             * Allow Auth.js to accept the isolated local
+             * E2E server host.
              */
             AUTH_TRUST_HOST:
               "true",
@@ -197,8 +245,9 @@ export default defineConfig({
               localBaseUrl,
 
             /*
-             * Keep local E2E execution in the safe CSP
-             * compatibility configuration.
+             * Local E2E tests use compatibility CSP.
+             * Strict enforcement is tested against Preview
+             * and Production deployments.
              */
             STRICT_CSP_RUNTIME_MODE:
               "disabled",
