@@ -1,24 +1,51 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
-import WishlistHeaderLink from "@/components/wishlist/WishlistHeaderLink";
+import {
+  usePathname,
+} from "next/navigation";
+
+import {
+  signOut,
+  useSession,
+} from "next-auth/react";
+
 import {
   useEffect,
   useRef,
   useState,
 } from "react";
 
-import { useCartStore } from "@/store/cart-store";
+import WishlistHeaderLink from "@/components/wishlist/WishlistHeaderLink";
+import {
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
+import {
+  useCartStore,
+} from "@/store/cart-store";
+
+type MobileMenuState = {
+  pathname: string;
+  open: boolean;
+};
 
 export default function Header() {
-  const [mounted, setMounted] = useState(false);
+  const pathname =
+    usePathname();
 
-  const [mobileMenuOpen, setMobileMenuOpen] =
-    useState(false);
+  const mounted =
+    useHasMounted();
 
-  const pathname = usePathname();
+  const [
+    mobileMenuState,
+    setMobileMenuState,
+  ] =
+    useState<MobileMenuState>(
+      () => ({
+        pathname,
+        open: false,
+      }),
+    );
 
   const {
     data: session,
@@ -27,76 +54,113 @@ export default function Header() {
   } = useSession();
 
   const lastPathnameRef =
-    useRef<string | null>(null);
+    useRef<string | null>(
+      null,
+    );
 
-  const items = useCartStore(
-    (state) => state.items,
-  );
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const items =
+    useCartStore(
+      (state) =>
+        state.items,
+    );
 
   /*
-   * Login server action redirect করার পর
-   * client-side SessionProvider-এর session
-   * refresh করে।
+   * Refresh the client-side session after navigation,
+   * including redirects from authentication actions.
    */
   useEffect(() => {
     if (
-      lastPathnameRef.current === pathname
+      lastPathnameRef.current ===
+      pathname
     ) {
       return;
     }
 
-    lastPathnameRef.current = pathname;
+    lastPathnameRef.current =
+      pathname;
 
     void update();
-  }, [pathname, update]);
+  }, [
+    pathname,
+    update,
+  ]);
 
   /*
-   * Page পরিবর্তন হলে mobile menu বন্ধ হবে।
+   * The menu is considered open only for the route on
+   * which it was opened. A pathname change therefore
+   * closes it without a setState call inside an effect.
    */
-  useEffect(() => {
-    setMobileMenuOpen(false);
-  }, [pathname]);
+  const mobileMenuOpen =
+    mobileMenuState.pathname ===
+      pathname &&
+    mobileMenuState.open;
 
-  const totalItems = items.reduce(
-    (total, item) =>
-      total + item.quantity,
-    0,
-  );
+  const closeMobileMenu =
+    (): void => {
+      setMobileMenuState({
+        pathname,
+        open: false,
+      });
+    };
+
+  const toggleMobileMenu =
+    (): void => {
+      setMobileMenuState(
+        (currentState) => {
+          const currentlyOpen =
+            currentState.pathname ===
+              pathname
+              ? currentState.open
+              : false;
+
+          return {
+            pathname,
+            open:
+              !currentlyOpen,
+          };
+        },
+      );
+    };
+
+  const totalItems =
+    items.reduce(
+      (
+        total,
+        item,
+      ) =>
+        total +
+        item.quantity,
+      0,
+    );
 
   const customerName =
     session?.user?.name ||
     session?.user?.email ||
     "My account";
 
-  const closeMobileMenu = () => {
-    setMobileMenuOpen(false);
-  };
+  const handleLogout =
+    async (): Promise<void> => {
+      closeMobileMenu();
 
-  const handleLogout = async () => {
-    closeMobileMenu();
-
-    await signOut({
-      redirectTo: "/",
-    });
-  };
+      await signOut({
+        redirectTo:
+          "/",
+      });
+    };
 
   return (
-    <header className="print:hidden sticky top-0 z-50 border-b border-gray-200 bg-white/95 backdrop-blur">
+    <header className="sticky top-0 z-50 border-b border-gray-200 bg-white/95 backdrop-blur print:hidden">
       <div className="mx-auto flex min-h-[72px] max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        {/* Logo */}
         <Link
           href="/"
-          onClick={closeMobileMenu}
+          onClick={
+            closeMobileMenu
+          }
           className="shrink-0 text-xl font-bold tracking-tight text-gray-900"
         >
           MyStore
         </Link>
 
-        {/* Desktop navigation */}
         <nav className="hidden items-center gap-7 md:flex">
           <Link
             href="/"
@@ -123,11 +187,11 @@ export default function Header() {
           )}
         </nav>
 
-        {/* Right-side controls */}
         <div className="flex items-center gap-1 sm:gap-2">
-          {/* Authentication controls */}
           <WishlistHeaderLink />
-          {status === "loading" ? (
+
+          {status ===
+          "loading" ? (
             <div className="h-9 w-16 animate-pulse rounded-lg bg-gray-200 sm:w-24" />
           ) : status ===
             "authenticated" ? (
@@ -141,7 +205,9 @@ export default function Header() {
 
               <button
                 type="button"
-                onClick={handleLogout}
+                onClick={() => {
+                  void handleLogout();
+                }}
                 className="inline-flex items-center justify-center rounded-lg border border-gray-300 px-2.5 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 sm:px-4 sm:text-sm"
               >
                 Logout
@@ -165,12 +231,15 @@ export default function Header() {
             </div>
           )}
 
-          {/* Cart */}
           <Link
             href="/cart"
-            onClick={closeMobileMenu}
+            onClick={
+              closeMobileMenu
+            }
             aria-label={`Shopping cart with ${
-              mounted ? totalItems : 0
+              mounted
+                ? totalItems
+                : 0
             } items`}
             className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-gray-800 transition hover:bg-gray-100"
           >
@@ -196,16 +265,17 @@ export default function Header() {
             </svg>
 
             {mounted &&
-              totalItems > 0 && (
+              totalItems >
+                0 && (
                 <span className="absolute -right-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
-                  {totalItems > 99
+                  {totalItems >
+                  99
                     ? "99+"
                     : totalItems}
                 </span>
               )}
           </Link>
 
-          {/* Mobile menu button */}
           <button
             type="button"
             aria-label={
@@ -217,10 +287,8 @@ export default function Header() {
               mobileMenuOpen
             }
             aria-controls="mobile-navigation"
-            onClick={() =>
-              setMobileMenuOpen(
-                (current) => !current,
-              )
+            onClick={
+              toggleMobileMenu
             }
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-gray-800 transition hover:bg-gray-100 md:hidden"
           >
@@ -257,7 +325,6 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Mobile navigation */}
       {mobileMenuOpen && (
         <nav
           id="mobile-navigation"
@@ -275,8 +342,8 @@ export default function Header() {
                   {customerName}
                 </p>
 
-                {session.user
-                  .email && (
+                {session?.user
+                  ?.email && (
                   <p className="mt-1 truncate text-xs text-gray-500">
                     {
                       session.user
@@ -289,7 +356,9 @@ export default function Header() {
 
             <Link
               href="/"
-              onClick={closeMobileMenu}
+              onClick={
+                closeMobileMenu
+              }
               className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
             >
               Home
@@ -297,7 +366,9 @@ export default function Header() {
 
             <Link
               href="/shop"
-              onClick={closeMobileMenu}
+              onClick={
+                closeMobileMenu
+              }
               className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
             >
               Shop
@@ -305,7 +376,9 @@ export default function Header() {
 
             <Link
               href="/cart"
-              onClick={closeMobileMenu}
+              onClick={
+                closeMobileMenu
+              }
               className="rounded-lg px-3 py-3 font-medium text-gray-800 transition hover:bg-gray-100"
             >
               Cart (
@@ -333,7 +406,9 @@ export default function Header() {
 
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={() => {
+                    void handleLogout();
+                  }}
                   className="mt-2 rounded-lg bg-red-50 px-3 py-3 text-left font-semibold text-red-700 transition hover:bg-red-100"
                 >
                   Logout

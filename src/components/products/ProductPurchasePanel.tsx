@@ -1,13 +1,14 @@
 "use client";
 
 import {
-  useEffect,
   useMemo,
   useState,
 } from "react";
 
 import WishlistButton from "@/components/wishlist/WishlistButton";
-import { useCartStore } from "@/store/cart-store";
+import {
+  useCartStore,
+} from "@/store/cart-store";
 
 type StockStatus =
   | "instock"
@@ -87,11 +88,14 @@ function getAttributeKey(
 function formatPrice(
   value: string,
 ): string {
-  const price = Number(value);
+  const price =
+    Number(value);
 
   if (
     value === "" ||
-    !Number.isFinite(price)
+    !Number.isFinite(
+      price,
+    )
   ) {
     return "Price unavailable";
   }
@@ -99,17 +103,27 @@ function formatPrice(
   return new Intl.NumberFormat(
     "en-BD",
     {
-      style: "currency",
-      currency: "BDT",
-      maximumFractionDigits: 0,
+      style:
+        "currency",
+
+      currency:
+        "BDT",
+
+      maximumFractionDigits:
+        0,
     },
-  ).format(price);
+  ).format(
+    price,
+  );
 }
 
 function getStockMessage(
-  stockStatus: StockStatus,
+  stockStatus:
+    StockStatus,
 ): string {
-  switch (stockStatus) {
+  switch (
+    stockStatus
+  ) {
     case "instock":
       return "In stock";
 
@@ -125,9 +139,12 @@ function getStockMessage(
 }
 
 function getStockClassName(
-  stockStatus: StockStatus,
+  stockStatus:
+    StockStatus,
 ): string {
-  switch (stockStatus) {
+  switch (
+    stockStatus
+  ) {
     case "instock":
       return "text-green-700";
 
@@ -146,45 +163,76 @@ export default function ProductPurchasePanel({
   product,
   variations = [],
 }: ProductPurchasePanelProps) {
-  const [selectedOptions, setSelectedOptions] =
-    useState<Record<string, string>>(
-      {},
+  const [
+    selectedOptions,
+    setSelectedOptions,
+  ] =
+    useState<
+      Record<
+        string,
+        string
+      >
+    >({});
+
+  /*
+   * Store the exact product/option selection that was most
+   * recently added. The visible success state is derived
+   * from this signature, so changing an option resets the
+   * message without a setState call inside an effect.
+   */
+  const [
+    addedSelectionSignature,
+    setAddedSelectionSignature,
+  ] =
+    useState<
+      string | null
+    >(null);
+
+  const addItem =
+    useCartStore(
+      (state) =>
+        state.addItem,
     );
-
-  const [addedToCart, setAddedToCart] =
-    useState(false);
-
-  const addItem = useCartStore(
-    (state) => state.addItem,
-  );
 
   const variationAttributes =
     useMemo(
       () =>
         (
-          product.attributes ?? []
+          product.attributes ??
+          []
         ).filter(
-          (attribute) =>
+          (
+            attribute,
+          ) =>
             attribute.variation &&
-            attribute.options.length > 0,
+            attribute.options
+              .length >
+              0,
         ),
-      [product.attributes],
+      [
+        product.attributes,
+      ],
     );
 
   const isVariableProduct =
-    product.type === "variable";
+    product.type ===
+    "variable";
 
   const allOptionsSelected =
     !isVariableProduct ||
     variationAttributes.every(
-      (attribute) => {
+      (
+        attribute,
+      ) => {
         const key =
           getAttributeKey(
             attribute.name,
           );
 
         return Boolean(
-          selectedOptions[key],
+          selectedOptions[
+            key
+          ],
         );
       },
     );
@@ -199,9 +247,13 @@ export default function ProductPurchasePanel({
       }
 
       return variations.find(
-        (variation) => {
-          return variationAttributes.every(
-            (productAttribute) => {
+        (
+          variation,
+        ) =>
+          variationAttributes.every(
+            (
+              productAttribute,
+            ) => {
               const attributeKey =
                 getAttributeKey(
                   productAttribute.name,
@@ -214,7 +266,9 @@ export default function ProductPurchasePanel({
 
               const variationAttribute =
                 variation.attributes.find(
-                  (attribute) =>
+                  (
+                    attribute,
+                  ) =>
                     getAttributeKey(
                       attribute.name,
                     ) ===
@@ -222,28 +276,29 @@ export default function ProductPurchasePanel({
                 );
 
               /*
-               * WooCommerce variation-এর
-               * option খালি হলে এটি
-               * "Any option" হিসেবে কাজ করে।
+               * An empty WooCommerce variation option acts
+               * as "Any option".
                */
               if (
                 !variationAttribute ||
-                !variationAttribute.option
+                !variationAttribute
+                  .option
               ) {
                 return true;
               }
 
               return (
                 normalizeValue(
-                  variationAttribute.option,
+                  variationAttribute
+                    .option,
                 ) ===
                 normalizeValue(
-                  selectedValue ?? "",
+                  selectedValue ??
+                    "",
                 )
               );
             },
-          );
-        },
+          ),
       );
     }, [
       allOptionsSelected,
@@ -255,7 +310,8 @@ export default function ProductPurchasePanel({
 
   const currentPrice =
     isVariableProduct
-      ? selectedVariation?.price ??
+      ? selectedVariation
+          ?.price ??
         product.price
       : product.price;
 
@@ -267,13 +323,19 @@ export default function ProductPurchasePanel({
       : product.stock_status;
 
   const currentImage =
-    selectedVariation?.image?.src ||
-    product.images?.[0]?.src;
+    selectedVariation
+      ?.image
+      ?.src ||
+    product.images?.[0]
+      ?.src;
 
   const hasValidPrice =
-    currentPrice !== "" &&
+    currentPrice !==
+      "" &&
     Number.isFinite(
-      Number(currentPrice),
+      Number(
+        currentPrice,
+      ),
     );
 
   const variationUnavailable =
@@ -285,96 +347,184 @@ export default function ProductPurchasePanel({
     hasValidPrice &&
     currentStockStatus !==
       "outofstock" &&
-    (!isVariableProduct ||
-      Boolean(selectedVariation));
+    (
+      !isVariableProduct ||
+      Boolean(
+        selectedVariation,
+      )
+    );
 
   const selectedCartAttributes =
     variationAttributes
-      .map((attribute) => {
-        const key =
-          getAttributeKey(
-            attribute.name,
-          );
+      .map(
+        (
+          attribute,
+        ) => {
+          const key =
+            getAttributeKey(
+              attribute.name,
+            );
 
-        const option =
-          selectedOptions[key];
+          const option =
+            selectedOptions[
+              key
+            ];
 
-        if (!option) {
-          return null;
-        }
+          if (!option) {
+            return null;
+          }
 
-        return {
-          name: attribute.name,
-          option,
-        };
-      })
+          return {
+            name:
+              attribute.name,
+
+            option,
+          };
+        },
+      )
       .filter(
         (
           attribute,
         ): attribute is {
           name: string;
           option: string;
-        } => attribute !== null,
+        } =>
+          attribute !==
+          null,
       );
 
-  useEffect(() => {
-    setAddedToCart(false);
-  }, [selectedOptions]);
+  /*
+   * Build a stable signature from the current product and
+   * ordered variation selections.
+   */
+  const currentSelectionSignature =
+    useMemo(
+      () =>
+        [
+          String(
+            product.id,
+          ),
 
-  const handleOptionChange = (
-    attributeName: string,
-    option: string,
-  ) => {
-    const key =
-      getAttributeKey(
-        attributeName,
-      );
+          isVariableProduct
+            ? "variable"
+            : "simple",
 
-    setSelectedOptions(
-      (current) => ({
-        ...current,
-        [key]: option,
-      }),
+          ...variationAttributes.map(
+            (
+              attribute,
+            ) => {
+              const key =
+                getAttributeKey(
+                  attribute.name,
+                );
+
+              return `${key}=${normalizeValue(
+                selectedOptions[
+                  key
+                ] ?? "",
+              )}`;
+            },
+          ),
+        ].join(
+          "|",
+        ),
+      [
+        isVariableProduct,
+        product.id,
+        selectedOptions,
+        variationAttributes,
+      ],
     );
-  };
 
-  const handleAddToCart = () => {
-    if (!canAddToCart) {
-      return;
-    }
+  const addedToCart =
+    addedSelectionSignature ===
+    currentSelectionSignature;
 
-    const variationId =
-      selectedVariation?.id;
+  const handleOptionChange =
+    (
+      attributeName:
+        string,
+      option:
+        string,
+    ): void => {
+      const key =
+        getAttributeKey(
+          attributeName,
+        );
 
-    const cartKey = variationId
-      ? `${product.id}:${variationId}`
-      : String(product.id);
+      setSelectedOptions(
+        (
+          current,
+        ) => ({
+          ...current,
+          [key]:
+            option,
+        }),
+      );
+    };
 
-    addItem({
-      cartKey,
-      productId: product.id,
-      variationId,
-      name: product.name,
-      slug: product.slug,
-      price: currentPrice,
-      image: currentImage,
-      stockStatus:
-        currentStockStatus,
-      attributes:
-        selectedCartAttributes,
-    });
+  const handleAddToCart =
+    (): void => {
+      if (
+        !canAddToCart
+      ) {
+        return;
+      }
 
-    setAddedToCart(true);
-  };
+      const variationId =
+        selectedVariation
+          ?.id;
+
+      const cartKey =
+        variationId
+          ? `${product.id}:${variationId}`
+          : String(
+              product.id,
+            );
+
+      addItem({
+        cartKey,
+
+        productId:
+          product.id,
+
+        variationId,
+
+        name:
+          product.name,
+
+        slug:
+          product.slug,
+
+        price:
+          currentPrice,
+
+        image:
+          currentImage,
+
+        stockStatus:
+          currentStockStatus,
+
+        attributes:
+          selectedCartAttributes,
+      });
+
+      setAddedSelectionSignature(
+        currentSelectionSignature,
+      );
+    };
 
   return (
     <section className="mt-6">
       {isVariableProduct &&
-        variationAttributes.length >
+        variationAttributes
+          .length >
           0 && (
           <div className="space-y-5">
             {variationAttributes.map(
-              (attribute) => {
+              (
+                attribute,
+              ) => {
                 const attributeKey =
                   getAttributeKey(
                     attribute.name,
@@ -399,17 +549,18 @@ export default function ProductPurchasePanel({
                       value={
                         selectedOptions[
                           attributeKey
-                        ] ?? ""
+                        ] ??
+                        ""
                       }
                       onChange={(
                         event,
-                      ) =>
+                      ) => {
                         handleOptionChange(
                           attribute.name,
                           event.target
                             .value,
-                        )
-                      }
+                        );
+                      }}
                       className="h-12 w-full rounded-xl border border-gray-300 bg-white px-4 text-gray-900 outline-none transition focus:border-gray-900"
                     >
                       <option value="">
@@ -418,10 +569,16 @@ export default function ProductPurchasePanel({
                       </option>
 
                       {attribute.options.map(
-                        (option) => (
+                        (
+                          option,
+                        ) => (
                           <option
-                            key={option}
-                            value={option}
+                            key={
+                              option
+                            }
+                            value={
+                              option
+                            }
                           >
                             {option}
                           </option>
@@ -439,7 +596,8 @@ export default function ProductPurchasePanel({
         <p className="text-3xl font-bold text-gray-900">
           {isVariableProduct &&
           !selectedVariation &&
-          product.price === ""
+          product.price ===
+            ""
             ? "Select options"
             : formatPrice(
                 currentPrice,
@@ -461,9 +619,7 @@ export default function ProductPurchasePanel({
         {isVariableProduct &&
           !allOptionsSelected && (
             <p className="mt-3 text-sm text-gray-600">
-              Select all available
-              options before adding this
-              product to your cart.
+              Select all available options before adding this product to your cart.
             </p>
           )}
 
@@ -472,9 +628,7 @@ export default function ProductPurchasePanel({
             role="alert"
             className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
           >
-            This option combination is
-            currently unavailable. Please
-            choose another combination.
+            This option combination is currently unavailable. Please choose another combination.
           </div>
         )}
 
@@ -491,8 +645,12 @@ export default function ProductPurchasePanel({
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <button
           type="button"
-          disabled={!canAddToCart}
-          onClick={handleAddToCart}
+          disabled={
+            !canAddToCart
+          }
+          onClick={
+            handleAddToCart
+          }
           className="min-h-12 flex-1 rounded-xl bg-gray-900 px-7 py-3 font-semibold text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-400 sm:flex-none"
         >
           {currentStockStatus ===
@@ -509,13 +667,24 @@ export default function ProductPurchasePanel({
         <WishlistButton
           showLabel
           product={{
-            productId: product.id,
-            name: product.name,
-            slug: product.slug,
-            price: currentPrice,
-            image: currentImage,
+            productId:
+              product.id,
+
+            name:
+              product.name,
+
+            slug:
+              product.slug,
+
+            price:
+              currentPrice,
+
+            image:
+              currentImage,
+
             stockStatus:
               currentStockStatus,
+
             productType:
               product.type,
           }}

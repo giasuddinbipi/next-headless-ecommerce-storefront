@@ -2,6 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import {
+  useRouter,
+} from "next/navigation";
 
 import {
   useCallback,
@@ -10,18 +13,15 @@ import {
   useState,
 } from "react";
 
-import {
-  useRouter,
-} from "next/navigation";
-
 import CartValidationBanner, {
   type CartValidationChange,
   type CartValidationRemovedItem,
   type CartValidationViewResult,
 } from "@/components/cart/CartValidationBanner";
-
 import ReorderResultBanner from "@/components/cart/ReorderResultBanner";
-
+import {
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
 import {
   useCartStore,
   type CartAttribute,
@@ -70,7 +70,8 @@ function isObject(
   value: unknown,
 ): value is UnknownRecord {
   return (
-    typeof value === "object" &&
+    typeof value ===
+      "object" &&
     value !== null &&
     !Array.isArray(value)
   );
@@ -108,7 +109,8 @@ function isCartItem(
     );
 
   const imageIsValid =
-    value.image === undefined ||
+    value.image ===
+      undefined ||
     typeof value.image ===
       "string";
 
@@ -205,7 +207,8 @@ function isNonNegativeInteger(
   value: unknown,
 ): value is number {
   return (
-    typeof value === "number" &&
+    typeof value ===
+      "number" &&
     Number.isInteger(value) &&
     value >= 0
   );
@@ -271,8 +274,8 @@ export default function CartPage() {
   const router =
     useRouter();
 
-  const [mounted, setMounted] =
-    useState(false);
+  const mounted =
+    useHasMounted();
 
   const [
     validating,
@@ -302,7 +305,8 @@ export default function CartPage() {
 
   const items =
     useCartStore(
-      (state) => state.items,
+      (state) =>
+        state.items,
     );
 
   const replaceItems =
@@ -335,10 +339,6 @@ export default function CartPage() {
         state.clearCart,
     );
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
   const validateCartSnapshot =
     useCallback(
       async (
@@ -349,24 +349,39 @@ export default function CartPage() {
         | null
       > => {
         if (
-          cartItems.length === 0
+          cartItems.length ===
+          0
         ) {
-          setCartValidated(true);
-          setValidationError("");
+          setCartValidated(
+            true,
+          );
+
+          setValidationError(
+            "",
+          );
 
           return null;
         }
 
-        setValidating(true);
-        setValidationError("");
-        setValidationResult(null);
+        setValidating(
+          true,
+        );
+
+        setValidationError(
+          "",
+        );
+
+        setValidationResult(
+          null,
+        );
 
         try {
           const response =
             await fetch(
               "/api/cart/validate",
               {
-                method: "POST",
+                method:
+                  "POST",
 
                 headers: {
                   Accept:
@@ -378,21 +393,28 @@ export default function CartPage() {
 
                 body:
                   JSON.stringify({
-                    website: "",
+                    website:
+                      "",
+
                     items:
                       cartItems,
                   }),
 
-                cache: "no-store",
+                cache:
+                  "no-store",
               },
             );
 
           const data: unknown =
             await response
               .json()
-              .catch(() => null);
+              .catch(
+                () => null,
+              );
 
-          if (!response.ok) {
+          if (
+            !response.ok
+          ) {
             throw new Error(
               getErrorMessage(
                 data,
@@ -411,8 +433,8 @@ export default function CartPage() {
           }
 
           /*
-           * Server response সফল হলে তবেই
-           * existing cart replace করা হবে।
+           * Replace the existing cart only after the server
+           * has returned a valid successful response.
            */
           replaceItems(
             data.items,
@@ -441,11 +463,15 @@ export default function CartPage() {
               data.changes,
           });
 
-          setCartValidated(true);
+          setCartValidated(
+            true,
+          );
 
           return data;
         } catch (error) {
-          setCartValidated(false);
+          setCartValidated(
+            false,
+          );
 
           setValidationError(
             error instanceof Error
@@ -455,98 +481,160 @@ export default function CartPage() {
 
           return null;
         } finally {
-          setValidating(false);
+          setValidating(
+            false,
+          );
         }
       },
-      [replaceItems],
+      [
+        replaceItems,
+      ],
     );
 
   /*
-   * Cart page প্রথমবার hydration শেষ হলে
-   * automatic validation চালানো হবে।
+   * After hydration, automatically validate the first stable,
+   * non-empty cart snapshot.
+   *
+   * The validation begins inside a timer callback so the
+   * effect body does not synchronously trigger React state
+   * updates through validateCartSnapshot().
    */
   useEffect(() => {
     if (
       !mounted ||
       automaticValidationStarted
-        .current
+        .current ||
+      items.length ===
+        0
     ) {
       return;
     }
 
-    automaticValidationStarted.current =
-      true;
+    const cartSnapshot =
+      items;
 
-    if (items.length === 0) {
-      setCartValidated(true);
-      return;
-    }
+    const validationTimer =
+      window.setTimeout(
+        () => {
+          if (
+            automaticValidationStarted
+              .current
+          ) {
+            return;
+          }
 
-    void validateCartSnapshot(
-      items,
-    );
+          automaticValidationStarted
+            .current =
+            true;
+
+          void validateCartSnapshot(
+            cartSnapshot,
+          );
+        },
+        0,
+      );
+
+    return () => {
+      window.clearTimeout(
+        validationTimer,
+      );
+    };
   }, [
     mounted,
     items,
     validateCartSnapshot,
   ]);
 
-  const markCartAsChanged = () => {
-    setCartValidated(false);
-    setValidationResult(null);
-    setValidationError("");
-  };
+  const markCartAsChanged =
+    (): void => {
+      setCartValidated(
+        false,
+      );
 
-  const handleIncreaseQuantity = (
-    cartKey: string,
-  ) => {
-    if (validating) {
-      return;
-    }
+      setValidationResult(
+        null,
+      );
 
-    increaseQuantity(cartKey);
-    markCartAsChanged();
-  };
+      setValidationError(
+        "",
+      );
+    };
 
-  const handleDecreaseQuantity = (
-    cartKey: string,
-  ) => {
-    if (validating) {
-      return;
-    }
+  const handleIncreaseQuantity =
+    (
+      cartKey:
+        string,
+    ): void => {
+      if (validating) {
+        return;
+      }
 
-    decreaseQuantity(cartKey);
-    markCartAsChanged();
-  };
+      increaseQuantity(
+        cartKey,
+      );
 
-  const handleRemoveItem = (
-    cartKey: string,
-  ) => {
-    if (validating) {
-      return;
-    }
+      markCartAsChanged();
+    };
 
-    removeItem(cartKey);
-    markCartAsChanged();
-  };
+  const handleDecreaseQuantity =
+    (
+      cartKey:
+        string,
+    ): void => {
+      if (validating) {
+        return;
+      }
 
-  const handleClearCart = () => {
-    if (validating) {
-      return;
-    }
+      decreaseQuantity(
+        cartKey,
+      );
 
-    clearCart();
+      markCartAsChanged();
+    };
 
-    setCartValidated(true);
-    setValidationResult(null);
-    setValidationError("");
-  };
+  const handleRemoveItem =
+    (
+      cartKey:
+        string,
+    ): void => {
+      if (validating) {
+        return;
+      }
+
+      removeItem(
+        cartKey,
+      );
+
+      markCartAsChanged();
+    };
+
+  const handleClearCart =
+    (): void => {
+      if (validating) {
+        return;
+      }
+
+      clearCart();
+
+      setCartValidated(
+        true,
+      );
+
+      setValidationResult(
+        null,
+      );
+
+      setValidationError(
+        "",
+      );
+    };
 
   const handleRetryValidation =
-    () => {
+    (): void => {
       if (
         validating ||
-        items.length === 0
+        items.length ===
+          0
       ) {
         return;
       }
@@ -557,18 +645,18 @@ export default function CartPage() {
     };
 
   const handleProceedToCheckout =
-    async () => {
+    async (): Promise<void> => {
       if (
         validating ||
-        items.length === 0
+        items.length ===
+          0
       ) {
         return;
       }
 
       /*
-       * Checkout-এর ঠিক আগেও cart আবার
-       * validate হবে। Page-load validation-এর
-       * ওপর একমাত্রভাবে নির্ভর করা হবে না।
+       * Validate again immediately before checkout instead
+       * of relying only on the page-load validation.
        */
       const result =
         await validateCartSnapshot(
@@ -577,7 +665,8 @@ export default function CartPage() {
 
       if (
         !result ||
-        result.items.length === 0
+        result.items.length ===
+          0
       ) {
         return;
       }
@@ -589,10 +678,14 @@ export default function CartPage() {
 
   const subtotal =
     items.reduce(
-      (total, item) => {
+      (
+        total,
+        item,
+      ) => {
         const itemPrice =
           Number(
-            item.price || 0,
+            item.price ||
+              0,
           );
 
         return (
@@ -612,7 +705,10 @@ export default function CartPage() {
 
   const totalItems =
     items.reduce(
-      (total, item) =>
+      (
+        total,
+        item,
+      ) =>
         total +
         item.quantity,
       0,
@@ -628,7 +724,10 @@ export default function CartPage() {
     );
   }
 
-  if (items.length === 0) {
+  if (
+    items.length ===
+    0
+  ) {
     return (
       <main className="min-h-[70vh] bg-gray-50 px-4 py-12 sm:px-6">
         <div className="mx-auto max-w-7xl">
@@ -689,8 +788,7 @@ export default function CartPage() {
               </h1>
 
               <p className="mt-3 text-gray-600">
-                Browse the store and add
-                products to your cart.
+                Browse the store and add products to your cart.
               </p>
 
               <Link
@@ -708,7 +806,9 @@ export default function CartPage() {
 
   return (
     <main
-      aria-busy={validating}
+      aria-busy={
+        validating
+      }
       className="min-h-screen bg-gray-50 px-4 py-10 sm:px-6"
     >
       <div className="mx-auto max-w-7xl">
@@ -720,7 +820,8 @@ export default function CartPage() {
 
             <p className="mt-2 text-gray-600">
               {totalItems}{" "}
-              {totalItems === 1
+              {totalItems ===
+              1
                 ? "item"
                 : "items"}{" "}
               in your cart
@@ -729,7 +830,9 @@ export default function CartPage() {
 
           <button
             type="button"
-            disabled={validating}
+            disabled={
+              validating
+            }
             onClick={
               handleClearCart
             }
@@ -771,180 +874,180 @@ export default function CartPage() {
 
         <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
           <section className="space-y-4">
-            {items.map((item) => {
-              const itemPrice =
-                Number(
-                  item.price ||
-                    0,
-                );
+            {items.map(
+              (item) => {
+                const itemPrice =
+                  Number(
+                    item.price ||
+                      0,
+                  );
 
-              const lineTotal =
-                (
-                  Number.isFinite(
-                    itemPrice,
-                  )
-                    ? itemPrice
-                    : 0
-                ) *
-                item.quantity;
+                const lineTotal =
+                  (
+                    Number.isFinite(
+                      itemPrice,
+                    )
+                      ? itemPrice
+                      : 0
+                  ) *
+                  item.quantity;
 
-              return (
-                <article
-                  key={
-                    item.cartKey
-                  }
-                  className="grid gap-5 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-[140px_1fr]"
-                >
-                  <Link
-                    href={`/products/${item.slug}`}
-                    className="relative aspect-square overflow-hidden rounded-xl bg-gray-100"
+                return (
+                  <article
+                    key={
+                      item.cartKey
+                    }
+                    className="grid gap-5 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:grid-cols-[140px_1fr]"
                   >
-                    {item.image ? (
-                      <Image
-                        src={
-                          item.image
-                        }
-                        alt={
-                          item.name
-                        }
-                        fill
-                        sizes="140px"
-                        className="object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                        No image
-                      </div>
-                    )}
-                  </Link>
+                    <Link
+                      href={`/products/${item.slug}`}
+                      className="relative aspect-square overflow-hidden rounded-xl bg-gray-100"
+                    >
+                      {item.image ? (
+                        <Image
+                          src={
+                            item.image
+                          }
+                          alt={
+                            item.name
+                          }
+                          fill
+                          sizes="140px"
+                          className="object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                          No image
+                        </div>
+                      )}
+                    </Link>
 
-                  <div className="flex flex-col justify-between">
-                    <div>
-                      <Link
-                        href={`/products/${item.slug}`}
-                      >
-                        <h2 className="text-lg font-semibold text-gray-900 transition hover:text-blue-700">
-                          {item.name}
-                        </h2>
-                      </Link>
+                    <div className="flex flex-col justify-between">
+                      <div>
+                        <Link
+                          href={`/products/${item.slug}`}
+                        >
+                          <h2 className="text-lg font-semibold text-gray-900 transition hover:text-blue-700">
+                            {item.name}
+                          </h2>
+                        </Link>
 
-                      {item.attributes
-                        ?.length >
-                        0 && (
+                        {item.attributes
+                          ?.length >
+                          0 && (
+                          <p className="mt-2 text-sm text-gray-600">
+                            {item.attributes
+                              .map(
+                                (
+                                  attribute,
+                                ) =>
+                                  `${attribute.name}: ${attribute.option}`,
+                              )
+                              .join(
+                                " · ",
+                              )}
+                          </p>
+                        )}
+
                         <p className="mt-2 text-sm text-gray-600">
-                          {item.attributes
-                            .map(
-                              (
-                                attribute,
-                              ) =>
-                                `${attribute.name}: ${attribute.option}`,
-                            )
-                            .join(
-                              " · ",
-                            )}
+                          Unit price:{" "}
+                          {formatPrice(
+                            itemPrice,
+                          )}
                         </p>
-                      )}
 
-                      <p className="mt-2 text-sm text-gray-600">
-                        Unit price:{" "}
-                        {formatPrice(
-                          itemPrice,
+                        <p className="mt-2 font-bold text-gray-900">
+                          Total:{" "}
+                          {formatPrice(
+                            lineTotal,
+                          )}
+                        </p>
+
+                        {item.stockStatus ===
+                          "instock" && (
+                          <p className="mt-2 text-sm font-medium text-green-700">
+                            In stock
+                          </p>
                         )}
-                      </p>
 
-                      <p className="mt-2 font-bold text-gray-900">
-                        Total:{" "}
-                        {formatPrice(
-                          lineTotal,
+                        {item.stockStatus ===
+                          "onbackorder" && (
+                          <p className="mt-2 text-sm font-medium text-yellow-700">
+                            Available on backorder
+                          </p>
                         )}
-                      </p>
 
-                      {item.stockStatus ===
-                        "instock" && (
-                        <p className="mt-2 text-sm font-medium text-green-700">
-                          In stock
-                        </p>
-                      )}
+                        {item.stockStatus ===
+                          "outofstock" && (
+                          <p className="mt-2 text-sm font-medium text-red-700">
+                            Currently out of stock
+                          </p>
+                        )}
+                      </div>
 
-                      {item.stockStatus ===
-                        "onbackorder" && (
-                        <p className="mt-2 text-sm font-medium text-yellow-700">
-                          Available on
-                          backorder
-                        </p>
-                      )}
+                      <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex items-center overflow-hidden rounded-lg border border-gray-300">
+                          <button
+                            type="button"
+                            disabled={
+                              validating
+                            }
+                            aria-label={`Decrease ${item.name} quantity`}
+                            onClick={() =>
+                              handleDecreaseQuantity(
+                                item.cartKey,
+                              )
+                            }
+                            className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            −
+                          </button>
 
-                      {item.stockStatus ===
-                        "outofstock" && (
-                        <p className="mt-2 text-sm font-medium text-red-700">
-                          Currently out
-                          of stock
-                        </p>
-                      )}
-                    </div>
+                          <span className="flex h-10 min-w-10 items-center justify-center border-x border-gray-300 px-3 font-semibold">
+                            {
+                              item.quantity
+                            }
+                          </span>
 
-                    <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
-                      <div className="flex items-center overflow-hidden rounded-lg border border-gray-300">
+                          <button
+                            type="button"
+                            disabled={
+                              validating ||
+                              item.quantity >=
+                                99
+                            }
+                            aria-label={`Increase ${item.name} quantity`}
+                            onClick={() =>
+                              handleIncreaseQuantity(
+                                item.cartKey,
+                              )
+                            }
+                            className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            +
+                          </button>
+                        </div>
+
                         <button
                           type="button"
                           disabled={
                             validating
                           }
-                          aria-label={`Decrease ${item.name} quantity`}
                           onClick={() =>
-                            handleDecreaseQuantity(
+                            handleRemoveItem(
                               item.cartKey,
                             )
                           }
-                          className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="text-sm font-semibold text-red-600 transition hover:text-red-800 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          −
-                        </button>
-
-                        <span className="flex h-10 min-w-10 items-center justify-center border-x border-gray-300 px-3 font-semibold">
-                          {
-                            item.quantity
-                          }
-                        </span>
-
-                        <button
-                          type="button"
-                          disabled={
-                            validating ||
-                            item.quantity >=
-                              99
-                          }
-                          aria-label={`Increase ${item.name} quantity`}
-                          onClick={() =>
-                            handleIncreaseQuantity(
-                              item.cartKey,
-                            )
-                          }
-                          className="h-10 w-10 text-lg font-semibold transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          +
+                          Remove
                         </button>
                       </div>
-
-                      <button
-                        type="button"
-                        disabled={
-                          validating
-                        }
-                        onClick={() =>
-                          handleRemoveItem(
-                            item.cartKey,
-                          )
-                        }
-                        className="text-sm font-semibold text-red-600 transition hover:text-red-800 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
+                  </article>
+                );
+              },
+            )}
           </section>
 
           <aside className="h-fit rounded-2xl border border-gray-200 bg-white p-6 shadow-sm lg:sticky lg:top-24">
@@ -954,7 +1057,9 @@ export default function CartPage() {
 
             <div className="mt-6 space-y-4 text-sm">
               <div className="flex justify-between text-gray-600">
-                <span>Items</span>
+                <span>
+                  Items
+                </span>
 
                 <span>
                   {totalItems}
@@ -979,14 +1084,15 @@ export default function CartPage() {
                 </span>
 
                 <span>
-                  Calculated at
-                  checkout
+                  Calculated at checkout
                 </span>
               </div>
             </div>
 
             <div className="mt-6 flex justify-between border-t border-gray-200 pt-5 text-lg font-bold text-gray-900">
-              <span>Total</span>
+              <span>
+                Total
+              </span>
 
               <span>
                 {formatPrice(
@@ -998,9 +1104,7 @@ export default function CartPage() {
             {!cartValidated &&
               !validating && (
                 <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
-                  Your cart will be
-                  checked again before
-                  checkout.
+                  Your cart will be checked again before checkout.
                 </div>
               )}
 
@@ -1008,7 +1112,8 @@ export default function CartPage() {
               type="button"
               disabled={
                 validating ||
-                items.length === 0
+                items.length ===
+                  0
               }
               onClick={() =>
                 void handleProceedToCheckout()

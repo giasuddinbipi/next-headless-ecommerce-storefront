@@ -49,7 +49,8 @@ function isProductReview(
 ): value is ProductReview {
   return (
     isObject(value) &&
-    typeof value.id === "number" &&
+    typeof value.id ===
+      "number" &&
     typeof value.dateCreated ===
       "string" &&
     typeof value.productId ===
@@ -71,7 +72,9 @@ function isReviewsResponse(
   return (
     isObject(value) &&
     value.success === true &&
-    Array.isArray(value.reviews) &&
+    Array.isArray(
+      value.reviews,
+    ) &&
     value.reviews.every(
       isProductReview,
     )
@@ -95,7 +98,8 @@ function getErrorMessage(
 function formatDate(
   value: string,
 ): string {
-  const date = new Date(value);
+  const date =
+    new Date(value);
 
   if (
     Number.isNaN(
@@ -108,11 +112,18 @@ function formatDate(
   return new Intl.DateTimeFormat(
     "en-BD",
     {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
+      day:
+        "numeric",
+
+      month:
+        "long",
+
+      year:
+        "numeric",
     },
-  ).format(date);
+  ).format(
+    date,
+  );
 }
 
 function StarRating({
@@ -123,7 +134,9 @@ function StarRating({
   label?: string;
 }) {
   const roundedRating =
-    Math.round(rating);
+    Math.round(
+      rating,
+    );
 
   return (
     <div
@@ -133,13 +146,24 @@ function StarRating({
       }
       className="flex items-center gap-0.5"
     >
-      {[1, 2, 3, 4, 5].map(
-        (star) => (
+      {[
+        1,
+        2,
+        3,
+        4,
+        5,
+      ].map(
+        (
+          star,
+        ) => (
           <span
-            key={star}
+            key={
+              star
+            }
             aria-hidden="true"
             className={
-              star <= roundedRating
+              star <=
+              roundedRating
                 ? "text-yellow-500"
                 : "text-gray-300"
             }
@@ -159,175 +183,325 @@ export default function ProductReviews({
   ratingCount,
 }: ProductReviewsProps) {
   const {
-    status: authStatus,
-  } = useSession();
+    status:
+      authStatus,
+  } =
+    useSession();
 
-  const [reviews, setReviews] =
-    useState<ProductReview[]>([]);
+  const [
+    reviews,
+    setReviews,
+  ] =
+    useState<
+      ProductReview[]
+    >([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [
+    loading,
+    setLoading,
+  ] =
+    useState(
+      true,
+    );
 
-  const [loadError, setLoadError] =
+  const [
+    loadError,
+    setLoadError,
+  ] =
     useState("");
 
-  const [rating, setRating] =
-    useState(0);
+  const [
+    rating,
+    setRating,
+  ] =
+    useState(
+      0,
+    );
 
-  const [submitting, setSubmitting] =
-    useState(false);
+  const [
+    submitting,
+    setSubmitting,
+  ] =
+    useState(
+      false,
+    );
 
-  const [submitError, setSubmitError] =
+  const [
+    submitError,
+    setSubmitError,
+  ] =
     useState("");
 
   const [
     successMessage,
     setSuccessMessage,
-  ] = useState("");
+  ] =
+    useState("");
 
   const loadReviews =
-    useCallback(async () => {
-      setLoading(true);
-      setLoadError("");
+    useCallback(
+      async (
+        signal?:
+          AbortSignal,
+      ): Promise<void> => {
+        setLoading(
+          true,
+        );
+
+        setLoadError(
+          "",
+        );
+
+        try {
+          const response =
+            await fetch(
+              `/api/products/${productId}/reviews`,
+              {
+                method:
+                  "GET",
+
+                cache:
+                  "no-store",
+
+                signal,
+              },
+            );
+
+          const data: unknown =
+            await response
+              .json()
+              .catch(
+                () => null,
+              );
+
+          if (
+            signal?.aborted
+          ) {
+            return;
+          }
+
+          if (
+            !response.ok
+          ) {
+            throw new Error(
+              getErrorMessage(
+                data,
+              ),
+            );
+          }
+
+          if (
+            !isReviewsResponse(
+              data,
+            )
+          ) {
+            throw new Error(
+              "The server returned an invalid reviews response.",
+            );
+          }
+
+          setReviews(
+            data.reviews,
+          );
+        } catch (error) {
+          if (
+            signal?.aborted ||
+            (
+              error instanceof DOMException &&
+              error.name ===
+                "AbortError"
+            )
+          ) {
+            return;
+          }
+
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : "Product reviews could not be loaded.",
+          );
+        } finally {
+          if (
+            !signal?.aborted
+          ) {
+            setLoading(
+              false,
+            );
+          }
+        }
+      },
+      [
+        productId,
+      ],
+    );
+
+  /*
+   * Load reviews after mount. The request begins inside a
+   * timer callback so the effect body does not synchronously
+   * trigger React state updates through loadReviews().
+   *
+   * AbortController prevents a response from an older
+   * product request from updating this component.
+   */
+  useEffect(() => {
+    const controller =
+      new AbortController();
+
+    const loadTimer =
+      window.setTimeout(
+        () => {
+          void loadReviews(
+            controller.signal,
+          );
+        },
+        0,
+      );
+
+    return () => {
+      window.clearTimeout(
+        loadTimer,
+      );
+
+      controller.abort();
+    };
+  }, [
+    loadReviews,
+  ]);
+
+  const handleSubmit =
+    async (
+      event:
+        FormEvent<HTMLFormElement>,
+    ): Promise<void> => {
+      event.preventDefault();
+
+      const form =
+        event.currentTarget;
+
+      setSubmitError(
+        "",
+      );
+
+      setSuccessMessage(
+        "",
+      );
+
+      if (
+        rating < 1 ||
+        rating > 5
+      ) {
+        setSubmitError(
+          "Select a rating before submitting your review.",
+        );
+
+        return;
+      }
+
+      const formData =
+        new FormData(
+          form,
+        );
+
+      const review =
+        String(
+          formData.get(
+            "review",
+          ) ?? "",
+        ).trim();
+
+      const website =
+        String(
+          formData.get(
+            "website",
+          ) ?? "",
+        );
+
+      if (
+        review.length <
+          10 ||
+        review.length >
+          1000
+      ) {
+        setSubmitError(
+          "Your review must contain between 10 and 1000 characters.",
+        );
+
+        return;
+      }
+
+      setSubmitting(
+        true,
+      );
 
       try {
-        const response = await fetch(
-          `/api/products/${productId}/reviews`,
-          {
-            method: "GET",
-            cache: "no-store",
-          },
-        );
+        const response =
+          await fetch(
+            `/api/products/${productId}/reviews`,
+            {
+              method:
+                "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body:
+                JSON.stringify({
+                  rating,
+                  review,
+                  website,
+                }),
+            },
+          );
 
         const data: unknown =
           await response
             .json()
-            .catch(() => null);
-
-        if (!response.ok) {
-          throw new Error(
-            getErrorMessage(data),
-          );
-        }
+            .catch(
+              () => null,
+            );
 
         if (
-          !isReviewsResponse(data)
+          !response.ok
         ) {
           throw new Error(
-            "The server returned an invalid reviews response.",
+            getErrorMessage(
+              data,
+            ),
           );
         }
 
-        setReviews(data.reviews);
+        const message =
+          isObject(
+            data,
+          ) &&
+          typeof data.message ===
+            "string"
+            ? data.message
+            : "Your review was submitted successfully.";
+
+        form.reset();
+
+        setRating(
+          0,
+        );
+
+        setSuccessMessage(
+          message,
+        );
       } catch (error) {
-        setLoadError(
+        setSubmitError(
           error instanceof Error
             ? error.message
-            : "Product reviews could not be loaded.",
+            : "Your review could not be submitted.",
         );
       } finally {
-        setLoading(false);
-      }
-    }, [productId]);
-
-  useEffect(() => {
-    void loadReviews();
-  }, [loadReviews]);
-
-  const handleSubmit = async (
-    event: FormEvent<HTMLFormElement>,
-  ) => {
-    event.preventDefault();
-
-    setSubmitError("");
-    setSuccessMessage("");
-
-    if (
-      rating < 1 ||
-      rating > 5
-    ) {
-      setSubmitError(
-        "Select a rating before submitting your review.",
-      );
-
-      return;
-    }
-
-    const formData = new FormData(
-      event.currentTarget,
-    );
-
-    const review = String(
-      formData.get("review") ?? "",
-    ).trim();
-
-    const website = String(
-      formData.get("website") ?? "",
-    );
-
-    if (
-      review.length < 10 ||
-      review.length > 1000
-    ) {
-      setSubmitError(
-        "Your review must contain between 10 and 1000 characters.",
-      );
-
-      return;
-    }
-
-    setSubmitting(true);
-
-    try {
-      const response = await fetch(
-        `/api/products/${productId}/reviews`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            rating,
-            review,
-            website,
-          }),
-        },
-      );
-
-      const data: unknown =
-        await response
-          .json()
-          .catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(
-          getErrorMessage(data),
+        setSubmitting(
+          false,
         );
       }
-
-      const message =
-        isObject(data) &&
-        typeof data.message ===
-          "string"
-          ? data.message
-          : "Your review was submitted successfully.";
-
-      event.currentTarget.reset();
-      setRating(0);
-      setSuccessMessage(message);
-    } catch (error) {
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "Your review could not be submitted.",
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
+    };
 
   const safeAverageRating =
     Number.isFinite(
@@ -352,8 +526,7 @@ export default function ProductReviews({
           </h2>
 
           <p className="mt-2 text-gray-600">
-            Read feedback from customers
-            who reviewed this product.
+            Read feedback from customers who reviewed this product.
           </p>
         </div>
 
@@ -374,7 +547,8 @@ export default function ProductReviews({
 
               <p className="mt-1 text-sm text-gray-500">
                 {ratingCount}{" "}
-                {ratingCount === 1
+                {ratingCount ===
+                1
                   ? "review"
                   : "reviews"}
               </p>
@@ -391,10 +565,17 @@ export default function ProductReviews({
 
           {loading && (
             <div className="mt-5 space-y-4">
-              {[1, 2].map(
-                (item) => (
+              {[
+                1,
+                2,
+              ].map(
+                (
+                  item,
+                ) => (
                   <div
-                    key={item}
+                    key={
+                      item
+                    }
                     className="h-32 animate-pulse rounded-xl bg-gray-100"
                   />
                 ),
@@ -411,9 +592,9 @@ export default function ProductReviews({
 
               <button
                 type="button"
-                onClick={() =>
-                  void loadReviews()
-                }
+                onClick={() => {
+                  void loadReviews();
+                }}
                 className="ml-2 font-bold underline"
               >
                 Try again
@@ -423,27 +604,32 @@ export default function ProductReviews({
 
           {!loading &&
             !loadError &&
-            reviews.length === 0 && (
+            reviews.length ===
+              0 && (
               <div className="mt-5 rounded-xl bg-gray-50 p-7 text-center">
                 <h4 className="font-bold text-gray-900">
                   No approved reviews yet
                 </h4>
 
                 <p className="mt-2 text-sm text-gray-600">
-                  Be the first customer
-                  to review this product.
+                  Be the first customer to review this product.
                 </p>
               </div>
             )}
 
           {!loading &&
             !loadError &&
-            reviews.length > 0 && (
+            reviews.length >
+              0 && (
               <div className="mt-5 divide-y divide-gray-200">
                 {reviews.map(
-                  (review) => (
+                  (
+                    review,
+                  ) => (
                     <article
-                      key={review.id}
+                      key={
+                        review.id
+                      }
                       className="py-6 first:pt-0 last:pb-0"
                     >
                       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -479,7 +665,9 @@ export default function ProductReviews({
                       </div>
 
                       <p className="mt-4 whitespace-pre-wrap leading-7 text-gray-700">
-                        {review.review}
+                        {
+                          review.review
+                        }
                       </p>
                     </article>
                   ),
@@ -502,8 +690,7 @@ export default function ProductReviews({
             "unauthenticated" && (
             <div className="mt-5">
               <p className="text-sm leading-6 text-gray-600">
-                Login to submit a rating
-                and review.
+                Login to submit a rating and review.
               </p>
 
               <Link
@@ -520,7 +707,9 @@ export default function ProductReviews({
           {authStatus ===
             "authenticated" && (
             <form
-              onSubmit={handleSubmit}
+              onSubmit={
+                handleSubmit
+              }
               className="mt-5"
             >
               <div
@@ -535,7 +724,9 @@ export default function ProductReviews({
                   id="reviewWebsite"
                   name="website"
                   type="text"
-                  tabIndex={-1}
+                  tabIndex={
+                    -1
+                  }
                   autoComplete="off"
                 />
               </div>
@@ -546,24 +737,39 @@ export default function ProductReviews({
                 </legend>
 
                 <div className="mt-3 flex gap-1">
-                  {[1, 2, 3, 4, 5].map(
-                    (star) => (
+                  {[
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                  ].map(
+                    (
+                      star,
+                    ) => (
                       <button
-                        key={star}
+                        key={
+                          star
+                        }
                         type="button"
                         aria-label={`${star} ${
-                          star === 1
+                          star ===
+                          1
                             ? "star"
                             : "stars"
                         }`}
                         aria-pressed={
-                          rating === star
+                          rating ===
+                          star
                         }
-                        onClick={() =>
-                          setRating(star)
-                        }
+                        onClick={() => {
+                          setRating(
+                            star,
+                          );
+                        }}
                         className={`text-3xl transition ${
-                          star <= rating
+                          star <=
+                          rating
                             ? "text-yellow-500"
                             : "text-gray-300 hover:text-yellow-400"
                         }`}
@@ -587,9 +793,15 @@ export default function ProductReviews({
                   required
                   id="review"
                   name="review"
-                  rows={6}
-                  minLength={10}
-                  maxLength={1000}
+                  rows={
+                    6
+                  }
+                  minLength={
+                    10
+                  }
+                  maxLength={
+                    1000
+                  }
                   placeholder="Share your experience with this product"
                   className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-gray-900"
                 />
@@ -619,7 +831,9 @@ export default function ProductReviews({
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={
+                  submitting
+                }
                 className="mt-5 w-full rounded-xl bg-gray-900 px-5 py-4 font-semibold text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-400"
               >
                 {submitting
@@ -628,9 +842,7 @@ export default function ProductReviews({
               </button>
 
               <p className="mt-3 text-xs leading-5 text-gray-500">
-                Reviews are checked before
-                they become publicly
-                visible.
+                Reviews are checked before they become publicly visible.
               </p>
             </form>
           )}

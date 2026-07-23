@@ -2351,6 +2351,14 @@ export async function POST(
     } =
       normalizedRequest.shipping;
 
+    /*
+     * Email and phone are intentionally excluded from the
+     * WooCommerce shipping-address payload. WooCommerce
+     * receives these contact fields through billing only.
+     */
+    void _shippingEmail;
+    void _shippingPhone;
+
     const orderMetaData:
       NonNullable<
         CreateOrderInput["meta_data"]

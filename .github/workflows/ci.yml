@@ -1,0 +1,108 @@
+name: Storefront CI
+
+on:
+  push:
+    branches:
+      - main
+      - strict-csp-style-attribute-fix
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storefront-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+jobs:
+  quality:
+    name: Lint, Security Tests and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run security tests
+        run: npm run test:security
+        env:
+          STRICT_CSP_RUNTIME_MODE: disabled
+          CSP_DEPLOYMENT_MODE: report-only
+
+      - name: Build production application
+        run: npm run build
+        env:
+          STRICT_CSP_RUNTIME_MODE: disabled
+          CSP_DEPLOYMENT_MODE: report-only
+
+  e2e:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs:
+      - quality
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: npm run test:e2e
+        env:
+          E2E_BASE_URL: ""
+          AUTH_SECRET: github-actions-local-e2e-secret
+          AUTH_TRUST_HOST: "true"
+          AUTH_URL: http://localhost:3100
+          STRICT_CSP_RUNTIME_MODE: disabled
+          CSP_DEPLOYMENT_MODE: report-only
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report-${{ github.run_attempt }}
+          path: playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload Playwright failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-test-results-${{ github.run_attempt }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore

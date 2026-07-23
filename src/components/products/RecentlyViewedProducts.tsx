@@ -4,9 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 
 import {
-  useEffect,
-  useState,
-} from "react";
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
 
 import { useRecentlyViewedStore } from "@/store/recently-viewed-store";
 
@@ -51,9 +50,8 @@ export default function RecentlyViewedProducts({
   excludeProductId,
   maximumProducts = 4,
 }: RecentlyViewedProductsProps) {
-  const [mounted, setMounted] =
-    useState(false);
-
+  const mounted =
+  useHasMounted();
   const items =
     useRecentlyViewedStore(
       (state) => state.items,
@@ -65,9 +63,6 @@ export default function RecentlyViewedProducts({
         state.clearRecentlyViewed,
     );
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   if (!mounted) {
     return null;

@@ -64,13 +64,7 @@ vi.mock(
         protectionBridge
           .limit;
 
-      constructor(
-        _configuration:
-          Record<
-            string,
-            unknown
-          >,
-      ) {}
+      constructor() {}
     }
 
     return {

@@ -4,9 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 
 import {
-  useEffect,
-  useState,
-} from "react";
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
 
 import { useWishlistStore } from "@/store/wishlist-store";
 
@@ -30,9 +29,8 @@ function formatPrice(
 }
 
 export default function WishlistPage() {
-  const [mounted, setMounted] =
-    useState(false);
-
+  const mounted =
+  useHasMounted();
   const items = useWishlistStore(
     (state) => state.items,
   );
@@ -46,10 +44,6 @@ export default function WishlistPage() {
     useWishlistStore(
       (state) => state.clearWishlist,
     );
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   if (!mounted) {
     return (

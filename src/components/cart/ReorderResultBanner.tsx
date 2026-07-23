@@ -42,7 +42,8 @@ function isObject(
   value: unknown,
 ): value is UnknownRecord {
   return (
-    typeof value === "object" &&
+    typeof value ===
+      "object" &&
     value !== null &&
     !Array.isArray(value)
   );
@@ -147,16 +148,21 @@ function parseStoredResult(
 function parseCount(
   value: string | null,
 ): number {
-  const count = Number(value);
+  const count =
+    Number(value);
 
   if (
-    !Number.isFinite(count) ||
+    !Number.isFinite(
+      count,
+    ) ||
     count < 0
   ) {
     return 0;
   }
 
-  return Math.floor(count);
+  return Math.floor(
+    count,
+  );
 }
 
 function getFallbackResultFromUrl():
@@ -178,17 +184,23 @@ function getFallbackResultFromUrl():
 
   const addedItemCount =
     parseCount(
-      searchParams.get("added"),
+      searchParams.get(
+        "added",
+      ),
     );
 
   const skippedItemCount =
     parseCount(
-      searchParams.get("skipped"),
+      searchParams.get(
+        "skipped",
+      ),
     );
 
   const adjustedItemCount =
     parseCount(
-      searchParams.get("adjusted"),
+      searchParams.get(
+        "adjusted",
+      ),
     );
 
   const hasChanges =
@@ -198,20 +210,25 @@ function getFallbackResultFromUrl():
   return {
     orderNumber,
 
-    message: hasChanges
-      ? "Available products were added using their current price and stock information."
-      : "All available products were added to your cart.",
+    message:
+      hasChanges
+        ? "Available products were added using their current price and stock information."
+        : "All available products were added to your cart.",
 
     addedItemCount,
     skippedItemCount,
     adjustedItemCount,
 
-    skippedItems: [],
-    adjustedItems: [],
+    skippedItems:
+      [],
+
+    adjustedItems:
+      [],
   };
 }
 
-function removeReorderSearchParams() {
+function removeReorderSearchParams():
+  void {
   const url =
     new URL(
       window.location.href,
@@ -233,11 +250,12 @@ function removeReorderSearchParams() {
     "adjusted",
   );
 
-  const nextUrl = [
-    url.pathname,
-    url.search,
-    url.hash,
-  ].join("");
+  const nextUrl =
+    [
+      url.pathname,
+      url.search,
+      url.hash,
+    ].join("");
 
   window.history.replaceState(
     window.history.state,
@@ -250,61 +268,89 @@ export default function ReorderResultBanner() {
   const [
     result,
     setResult,
-  ] = useState<ReorderResult | null>(
-    null,
-  );
+  ] =
+    useState<ReorderResult | null>(
+      null,
+    );
 
+  /*
+   * Load the one-time reorder result after the component
+   * has mounted.
+   *
+   * The work runs inside a timer callback so the effect
+   * body does not synchronously update React state.
+   */
   useEffect(() => {
-    let reorderResult:
-      ReorderResult | null = null;
+    const resultTimer =
+      window.setTimeout(
+        () => {
+          let reorderResult:
+            ReorderResult | null =
+              null;
 
-    /*
-     * Detailed result ReorderButton
-     * sessionStorage-এ সংরক্ষণ করেছে।
-     */
-    try {
-      const storedValue =
-        sessionStorage.getItem(
-          REORDER_STORAGE_KEY,
-        );
+          /*
+           * ReorderButton stores the detailed result in
+           * sessionStorage.
+           */
+          try {
+            const storedValue =
+              sessionStorage.getItem(
+                REORDER_STORAGE_KEY,
+              );
 
-      if (storedValue) {
-        const parsedValue:
-          unknown =
-          JSON.parse(storedValue);
+            if (storedValue) {
+              const parsedValue:
+                unknown =
+                JSON.parse(
+                  storedValue,
+                );
 
-        reorderResult =
-          parseStoredResult(
-            parsedValue,
+              reorderResult =
+                parseStoredResult(
+                  parsedValue,
+                );
+
+              /*
+               * Show the stored result only once.
+               */
+              sessionStorage.removeItem(
+                REORDER_STORAGE_KEY,
+              );
+            }
+          } catch {
+            /*
+             * Invalid or unavailable storage must not break
+             * the cart page.
+             */
+          }
+
+          /*
+           * Fall back to the URL summary when detailed
+           * storage is unavailable.
+           */
+          if (!reorderResult) {
+            reorderResult =
+              getFallbackResultFromUrl();
+          }
+
+          if (!reorderResult) {
+            return;
+          }
+
+          setResult(
+            reorderResult,
           );
 
-        /*
-         * Result শুধু একবার দেখানো হবে।
-         */
-        sessionStorage.removeItem(
-          REORDER_STORAGE_KEY,
-        );
-      }
-    } catch {
-      /*
-       * Invalid বা unavailable storage
-       * cart page-কে ভাঙবে না।
-       */
-    }
+          removeReorderSearchParams();
+        },
+        0,
+      );
 
-    /*
-     * sessionStorage unavailable হলে
-     * URL query থেকে basic summary নেওয়া হবে।
-     */
-    if (!reorderResult) {
-      reorderResult =
-        getFallbackResultFromUrl();
-    }
-
-    if (reorderResult) {
-      setResult(reorderResult);
-      removeReorderSearchParams();
-    }
+    return () => {
+      window.clearTimeout(
+        resultTimer,
+      );
+    };
   }, []);
 
   if (!result) {
@@ -312,8 +358,10 @@ export default function ReorderResultBanner() {
   }
 
   const hasWarnings =
-    result.skippedItemCount > 0 ||
-    result.adjustedItemCount > 0;
+    result.skippedItemCount >
+      0 ||
+    result.adjustedItemCount >
+      0;
 
   return (
     <section
@@ -328,9 +376,11 @@ export default function ReorderResultBanner() {
     >
       <button
         type="button"
-        onClick={() =>
-          setResult(null)
-        }
+        onClick={() => {
+          setResult(
+            null,
+          );
+        }}
         aria-label="Dismiss reorder result"
         className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full text-xl font-bold text-gray-500 transition hover:bg-white hover:text-gray-900"
       >
@@ -394,7 +444,8 @@ export default function ReorderResultBanner() {
         </div>
       </div>
 
-      {result.adjustedItems.length >
+      {result.adjustedItems
+        .length >
         0 && (
         <div className="mt-5 rounded-xl border border-amber-200 bg-white/80 p-4">
           <h3 className="font-bold text-amber-900">
@@ -403,7 +454,10 @@ export default function ReorderResultBanner() {
 
           <ul className="mt-3 space-y-3 text-sm leading-6 text-gray-700">
             {result.adjustedItems
-              .slice(0, 20)
+              .slice(
+                0,
+                20,
+              )
               .map(
                 (
                   item,
@@ -443,7 +497,8 @@ export default function ReorderResultBanner() {
         </div>
       )}
 
-      {result.skippedItems.length >
+      {result.skippedItems
+        .length >
         0 && (
         <div className="mt-5 rounded-xl border border-red-200 bg-white/80 p-4">
           <h3 className="font-bold text-red-900">
@@ -452,7 +507,10 @@ export default function ReorderResultBanner() {
 
           <ul className="mt-3 space-y-3 text-sm leading-6 text-gray-700">
             {result.skippedItems
-              .slice(0, 20)
+              .slice(
+                0,
+                20,
+              )
               .map(
                 (
                   item,
@@ -476,41 +534,41 @@ export default function ReorderResultBanner() {
         </div>
       )}
 
-      {(
-        result.skippedItemCount > 0 &&
-        result.skippedItems.length === 0
-      ) && (
-        <p className="mt-4 text-sm leading-6 text-red-700">
-          {
-            result.skippedItemCount
-          }{" "}
-          unavailable{" "}
-          {result.skippedItemCount ===
-          1
-            ? "product was"
-            : "products were"}{" "}
-          not added to the cart.
-        </p>
-      )}
+      {result.skippedItemCount >
+        0 &&
+        result.skippedItems
+          .length ===
+          0 && (
+          <p className="mt-4 text-sm leading-6 text-red-700">
+            {
+              result.skippedItemCount
+            }{" "}
+            unavailable{" "}
+            {result.skippedItemCount ===
+            1
+              ? "product was"
+              : "products were"}{" "}
+            not added to the cart.
+          </p>
+        )}
 
-      {(
-        result.adjustedItemCount > 0 &&
-        result.adjustedItems.length ===
-          0
-      ) && (
-        <p className="mt-3 text-sm leading-6 text-amber-800">
-          Stock availability changed for{" "}
-          {
-            result.adjustedItemCount
-          }{" "}
-          {result.adjustedItemCount ===
-          1
-            ? "product"
-            : "products"}
-          , so the reorder quantity was
-          adjusted.
-        </p>
-      )}
+      {result.adjustedItemCount >
+        0 &&
+        result.adjustedItems
+          .length ===
+          0 && (
+          <p className="mt-3 text-sm leading-6 text-amber-800">
+            Stock availability changed for{" "}
+            {
+              result.adjustedItemCount
+            }{" "}
+            {result.adjustedItemCount ===
+            1
+              ? "product"
+              : "products"}
+            , so the reorder quantity was adjusted.
+          </p>
+        )}
     </section>
   );
 }

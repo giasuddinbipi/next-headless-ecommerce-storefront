@@ -88,11 +88,8 @@ vi.mock(
           config;
 
         this.limit =
-          vi.fn(
-            async (
-              _identifier:
-                string,
-            ) => {
+  vi.fn(
+    async () => {
               const queuedResult =
                 ratelimitBridge
                   .queuedResults

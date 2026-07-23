@@ -63,13 +63,7 @@ vi.mock(
         monitoringBridge
           .limit;
 
-      constructor(
-        _config:
-          Record<
-            string,
-            unknown
-          >,
-      ) {}
+      constructor() {}
     }
 
     return {

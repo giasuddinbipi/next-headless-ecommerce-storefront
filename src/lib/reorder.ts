@@ -154,14 +154,6 @@ function normalizeAttributeName(
     .replace(/[\s_-]+/g, "");
 }
 
-function normalizeAttributeOption(
-  value: string,
-): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
 
 function toDisplayString(
   value: unknown,

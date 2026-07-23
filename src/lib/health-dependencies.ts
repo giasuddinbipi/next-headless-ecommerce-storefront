@@ -202,11 +202,12 @@ export async function checkApplicationDependency():
 ========================================================= */
 
 export async function checkRedisDependency(
-  _signal:
+  signal:
     AbortSignal,
 ): Promise<
   DependencyCheckResponse
 > {
+  signal.throwIfAborted();
   let redis:
     ReturnType<
       typeof getRedisClient

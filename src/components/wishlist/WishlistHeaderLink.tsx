@@ -2,24 +2,21 @@
 
 import Link from "next/link";
 
-import {
-  useEffect,
-  useState,
-} from "react";
 
 import { useWishlistStore } from "@/store/wishlist-store";
 
+import {
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
+
 export default function WishlistHeaderLink() {
-  const [mounted, setMounted] =
-    useState(false);
+  const mounted =
+  useHasMounted();
 
   const items = useWishlistStore(
     (state) => state.items,
   );
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const totalItems = mounted
     ? items.length

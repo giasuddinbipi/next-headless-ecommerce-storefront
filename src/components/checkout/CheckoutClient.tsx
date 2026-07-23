@@ -11,6 +11,8 @@ import {
   useState,
 } from "react";
 
+
+import { useHasMounted } from "@/hooks/use-has-mounted";
 import { useCartStore } from "@/store/cart-store";
 
 export type CheckoutInitialValues = {
@@ -567,10 +569,8 @@ export default function CheckoutClient({
   const router =
     useRouter();
 
-  const [
-    mounted,
-    setMounted,
-  ] = useState(false);
+  const mounted =
+    useHasMounted();
 
   const [
     shippingArea,
@@ -619,9 +619,15 @@ export default function CheckoutClient({
   ] = useState("");
 
   const [
-    supportReferenceCopied,
-    setSupportReferenceCopied,
-  ] = useState(false);
+    copiedSupportRequestId,
+    setCopiedSupportRequestId,
+  ] = useState("");
+
+  const supportReferenceCopied =
+    supportRequestId.length >
+      0 &&
+    copiedSupportRequestId ===
+      supportRequestId;
 
   const [
     orderResult,
@@ -1062,12 +1068,12 @@ export default function CheckoutClient({
             supportRequestId,
           );
 
-          setSupportReferenceCopied(
-            true,
+          setCopiedSupportRequestId(
+            supportRequestId,
           );
         } catch {
-          setSupportReferenceCopied(
-            false,
+          setCopiedSupportRequestId(
+            "",
           );
 
           setErrorMessage(
@@ -1081,49 +1087,62 @@ export default function CheckoutClient({
     );
 
   useEffect(() => {
-    setSupportReferenceCopied(
-      false,
-    );
-  }, [
-    supportRequestId,
-  ]);
-
-  useEffect(() => {
-    setMounted(true);
-
-    const storedAttempt =
-      readStoredOrderAttempt();
-
-    orderAttemptRef.current =
-      storedAttempt;
-
-    setHasRecoverableAttempt(
-      Boolean(
-        storedAttempt,
-      ),
-    );
-
-    setAllowAttemptCleanup(
-      storedAttempt
-        ? isOrderAttemptStale(
-            storedAttempt,
-          )
-        : false,
-    );
-
-    if (!storedAttempt) {
-      return;
-    }
-
     const controller =
       new AbortController();
 
-    void recoverPendingOrder(
-      storedAttempt,
-      controller.signal,
-    );
+    /*
+     * Defer browser-storage hydration until after the
+     * initial client commit. This keeps the effect focused
+     * on synchronizing with sessionStorage without causing
+     * a synchronous state-update cascade.
+     */
+    const initializationTimer =
+      window.setTimeout(
+        () => {
+          if (
+            controller.signal
+              .aborted
+          ) {
+            return;
+          }
+
+          const storedAttempt =
+            readStoredOrderAttempt();
+
+          orderAttemptRef.current =
+            storedAttempt;
+
+          setHasRecoverableAttempt(
+            Boolean(
+              storedAttempt,
+            ),
+          );
+
+          setAllowAttemptCleanup(
+            storedAttempt
+              ? isOrderAttemptStale(
+                  storedAttempt,
+                )
+              : false,
+          );
+
+          if (!storedAttempt) {
+            return;
+          }
+
+          void recoverPendingOrder(
+            storedAttempt,
+            controller.signal,
+          );
+        },
+        0,
+      );
 
     return () => {
+      window.clearTimeout(
+        initializationTimer,
+      );
+
       controller.abort();
     };
   }, [

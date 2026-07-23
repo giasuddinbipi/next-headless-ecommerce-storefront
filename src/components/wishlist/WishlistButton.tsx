@@ -2,14 +2,16 @@
 
 import {
   type MouseEvent,
-  useEffect,
-  useState,
 } from "react";
 
 import {
   type WishlistProduct,
   useWishlistStore,
 } from "@/store/wishlist-store";
+
+import {
+  useHasMounted,
+} from "@/hooks/use-has-mounted";
 
 type WishlistButtonProps = {
   product: WishlistProduct;
@@ -22,8 +24,8 @@ export default function WishlistButton({
   showLabel = false,
   className = "",
 }: WishlistButtonProps) {
-  const [mounted, setMounted] =
-    useState(false);
+  const mounted =
+  useHasMounted();
 
   const items = useWishlistStore(
     (state) => state.items,
@@ -33,10 +35,6 @@ export default function WishlistButton({
     useWishlistStore(
       (state) => state.toggleItem,
     );
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const isWishlisted =
     mounted &&
