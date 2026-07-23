@@ -153,6 +153,7 @@ export default defineConfig({
   "src/lib/csp-nonce.ts",
   "src/lib/strict-content-security-policy.ts",
   "src/lib/strict-csp-request.ts",
+  "src/lib/csp-runtime-coordination.ts",
 ],
 
       exclude: [

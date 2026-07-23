@@ -7,21 +7,14 @@ import {
 } from "./src/lib/browser-security-headers";
 
 import {
-  getCspDeploymentHeaders,
-} from "./src/lib/csp-deployment";
+  createCspRuntimePlan,
+} from "./src/lib/csp-runtime-coordination";
 
 const nextConfig:
   NextConfig = {
-  /*
-   * Prevent framework disclosure through:
-   * X-Powered-By: Next.js
-   */
   poweredByHeader:
     false,
 
-  /*
-   * Allow WooCommerce media hosted by the CMS.
-   */
   images: {
     remotePatterns: [
       {
@@ -40,14 +33,23 @@ const nextConfig:
     ],
   },
 
-  /*
-   * Apply browser security headers and the selected CSP
-   * deployment mode to all storefront and API routes.
-   */
   async headers() {
     const isProduction =
       process.env.NODE_ENV ===
       "production";
+
+    const cspRuntimePlan =
+      createCspRuntimePlan({
+        strictMode:
+          process.env
+            .STRICT_CSP_RUNTIME_MODE,
+
+        compatibilityMode:
+          process.env
+            .CSP_DEPLOYMENT_MODE,
+
+        isProduction,
+      });
 
     return [
       {
@@ -59,13 +61,8 @@ const nextConfig:
             isProduction,
           }),
 
-          ...getCspDeploymentHeaders({
-            mode:
-              process.env
-                .CSP_DEPLOYMENT_MODE,
-
-            isProduction,
-          }),
+          ...cspRuntimePlan
+            .staticHeaders,
         ],
       },
     ];
