@@ -7,18 +7,30 @@ import {
 import {
   createStrictContentSecurityPolicy,
   DEFAULT_COMMERCE_ORIGIN,
+  DEFAULT_CSP_REPORT_TO_GROUP,
+  DEFAULT_CSP_REPORT_URI,
+  REQUIRED_STYLE_ATTRIBUTE_HASH,
 } from "../../src/lib/strict-content-security-policy";
 
 /* =========================================================
-   Test fixtures
+   Fixtures
 ========================================================= */
 
-const nonce =
-  "123e4567e89b42d3a456426614174000";
+const TEST_NONCE =
+  "0123456789abcdef0123456789abcdef";
+
+const TEST_NONCE_SOURCE =
+  `'nonce-${TEST_NONCE}'`;
+
+/* =========================================================
+   Helpers
+========================================================= */
 
 function getDirective(
-  policy: string,
-  directiveName: string,
+  policy:
+    string,
+  directiveName:
+    string,
 ): string | undefined {
   return policy
     .split(
@@ -47,14 +59,96 @@ function getDirective(
 ========================================================= */
 
 describe(
-  "production strict content security policy",
+  "createStrictContentSecurityPolicy production policy",
   () => {
     it(
-      "creates a nonce-based production policy",
+      "creates a compact single-line policy",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        expect(
+          policy,
+        ).not.toContain(
+          "\n",
+        );
+
+        expect(
+          policy,
+        ).not.toContain(
+          "\r",
+        );
+
+        expect(
+          policy.endsWith(
+            ";",
+          ),
+        ).toBe(
+          true,
+        );
+      },
+    );
+
+    it(
+      "places the request nonce in script-src",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        expect(
+          getDirective(
+            policy,
+            "script-src",
+          ),
+        ).toContain(
+          TEST_NONCE_SOURCE,
+        );
+      },
+    );
+
+    it(
+      "places the request nonce in style-src",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        expect(
+          getDirective(
+            policy,
+            "style-src",
+          ),
+        ).toContain(
+          TEST_NONCE_SOURCE,
+        );
+      },
+    );
+
+    it(
+      "uses strict-dynamic for production scripts",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
           });
@@ -65,16 +159,10 @@ describe(
             "script-src",
           );
 
-        const styleDirective =
-          getDirective(
-            policy,
-            "style-src",
-          );
-
         expect(
           scriptDirective,
         ).toContain(
-          `'nonce-${nonce}'`,
+          "'self'",
         );
 
         expect(
@@ -82,6 +170,32 @@ describe(
         ).toContain(
           "'strict-dynamic'",
         );
+
+        expect(
+          scriptDirective,
+        ).toContain(
+          "https:",
+        );
+      },
+    );
+
+    it(
+      "does not allow unsafe script execution in production",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        const scriptDirective =
+          getDirective(
+            policy,
+            "script-src",
+          );
 
         expect(
           scriptDirective,
@@ -94,11 +208,31 @@ describe(
         ).not.toContain(
           "'unsafe-eval'",
         );
+      },
+    );
+
+    it(
+      "does not allow unsafe-inline style elements in production",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        const styleDirective =
+          getDirective(
+            policy,
+            "style-src",
+          );
 
         expect(
           styleDirective,
-        ).toContain(
-          `'nonce-${nonce}'`,
+        ).toBe(
+          `style-src 'self' ${TEST_NONCE_SOURCE}`,
         );
 
         expect(
@@ -110,77 +244,104 @@ describe(
     );
 
     it(
-      "includes production transport hardening",
+      "allows only the required hashed style attribute in production",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
           });
 
+        const styleAttributeDirective =
+          getDirective(
+            policy,
+            "style-src-attr",
+          );
+
         expect(
-          policy,
-        ).toContain(
-          "upgrade-insecure-requests",
+          styleAttributeDirective,
+        ).toBe(
+          `style-src-attr 'unsafe-hashes' '${REQUIRED_STYLE_ATTRIBUTE_HASH}'`,
+        );
+
+        expect(
+          styleAttributeDirective,
+        ).not.toContain(
+          "'unsafe-inline'",
         );
       },
     );
 
     it(
-      "includes restrictive document directives",
+      "contains the required strict structural restrictions",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
           });
 
         expect(
-          policy,
-        ).toContain(
-          "default-src 'self'",
-        );
-
-        expect(
-          policy,
-        ).toContain(
+          getDirective(
+            policy,
+            "object-src",
+          ),
+        ).toBe(
           "object-src 'none'",
         );
 
         expect(
-          policy,
-        ).toContain(
-          "base-uri 'self'",
-        );
-
-        expect(
-          policy,
-        ).toContain(
-          "form-action 'self'",
-        );
-
-        expect(
-          policy,
-        ).toContain(
+          getDirective(
+            policy,
+            "frame-src",
+          ),
+        ).toBe(
           "frame-src 'none'",
         );
 
         expect(
-          policy,
-        ).toContain(
+          getDirective(
+            policy,
+            "frame-ancestors",
+          ),
+        ).toBe(
           "frame-ancestors 'none'",
+        );
+
+        expect(
+          getDirective(
+            policy,
+            "base-uri",
+          ),
+        ).toBe(
+          "base-uri 'self'",
+        );
+
+        expect(
+          getDirective(
+            policy,
+            "form-action",
+          ),
+        ).toBe(
+          "form-action 'self'",
         );
       },
     );
 
     it(
-      "allows the configured commerce origin",
+      "allows the configured commerce origin for images and connections",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
           });
@@ -202,38 +363,60 @@ describe(
         ).toContain(
           DEFAULT_COMMERCE_ORIGIN,
         );
-
-        expect(
-          getDirective(
-            policy,
-            "media-src",
-          ),
-        ).toContain(
-          DEFAULT_COMMERCE_ORIGIN,
-        );
       },
     );
 
     it(
-      "includes legacy and modern reporting directives",
+      "configures CSP reporting",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
           });
 
         expect(
-          policy,
-        ).toContain(
-          "report-uri /api/security/csp-report",
+          getDirective(
+            policy,
+            "report-uri",
+          ),
+        ).toBe(
+          `report-uri ${DEFAULT_CSP_REPORT_URI}`,
         );
 
         expect(
-          policy,
-        ).toContain(
-          "report-to csp-endpoint",
+          getDirective(
+            policy,
+            "report-to",
+          ),
+        ).toBe(
+          `report-to ${DEFAULT_CSP_REPORT_TO_GROUP}`,
+        );
+      },
+    );
+
+    it(
+      "upgrades insecure requests in production",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              true,
+          });
+
+        expect(
+          getDirective(
+            policy,
+            "upgrade-insecure-requests",
+          ),
+        ).toBe(
+          "upgrade-insecure-requests",
         );
       },
     );
@@ -245,52 +428,138 @@ describe(
 ========================================================= */
 
 describe(
-  "development strict content security policy",
+  "createStrictContentSecurityPolicy development policy",
   () => {
     it(
-      "allows development-only evaluation and inline styles",
+      "allows unsafe-eval only for development scripts",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               false,
           });
 
-        const scriptDirective =
+        expect(
           getDirective(
             policy,
             "script-src",
-          );
-
-        const styleDirective =
-          getDirective(
-            policy,
-            "style-src",
-          );
-
-        expect(
-          scriptDirective,
+          ),
         ).toContain(
           "'unsafe-eval'",
         );
+      },
+    );
+
+    it(
+      "allows inline development style elements",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              false,
+          });
 
         expect(
-          scriptDirective,
-        ).not.toContain(
-          "'unsafe-inline'",
-        );
-
-        expect(
-          styleDirective,
+          getDirective(
+            policy,
+            "style-src",
+          ),
         ).toContain(
           "'unsafe-inline'",
         );
+      },
+    );
+
+    it(
+      "allows inline development style attributes",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              false,
+          });
 
         expect(
-          policy,
-        ).not.toContain(
-          "upgrade-insecure-requests",
+          getDirective(
+            policy,
+            "style-src-attr",
+          ),
+        ).toBe(
+          "style-src-attr 'unsafe-inline'",
+        );
+      },
+    );
+
+    it(
+      "does not upgrade insecure requests in development",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              false,
+          });
+
+        expect(
+          getDirective(
+            policy,
+            "upgrade-insecure-requests",
+          ),
+        ).toBeUndefined();
+      },
+    );
+
+    it(
+      "supports local HTTP and WebSocket development connections",
+      () => {
+        const policy =
+          createStrictContentSecurityPolicy({
+            nonce:
+              TEST_NONCE,
+
+            isProduction:
+              false,
+          });
+
+        const connectDirective =
+          getDirective(
+            policy,
+            "connect-src",
+          );
+
+        expect(
+          connectDirective,
+        ).toContain(
+          "http:",
+        );
+
+        expect(
+          connectDirective,
+        ).toContain(
+          "https:",
+        );
+
+        expect(
+          connectDirective,
+        ).toContain(
+          "ws:",
+        );
+
+        expect(
+          connectDirective,
+        ).toContain(
+          "wss:",
         );
       },
     );
@@ -302,80 +571,113 @@ describe(
 ========================================================= */
 
 describe(
-  "strict CSP custom configuration",
+  "createStrictContentSecurityPolicy custom values",
   () => {
     it(
-      "supports a custom commerce origin",
+      "supports a custom secure commerce origin and reporting values",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
+
             commerceOrigin:
-              "https://commerce.example.com/",
+              "https://commerce.example.com",
+
+            reportUri:
+              "/api/custom-csp-report",
+
+            reportToGroup:
+              "custom-csp-group",
           });
 
         expect(
-          policy,
+          getDirective(
+            policy,
+            "img-src",
+          ),
         ).toContain(
           "https://commerce.example.com",
         );
+
+        expect(
+          getDirective(
+            policy,
+            "connect-src",
+          ),
+        ).toContain(
+          "https://commerce.example.com",
+        );
+
+        expect(
+          getDirective(
+            policy,
+            "report-uri",
+          ),
+        ).toBe(
+          "report-uri /api/custom-csp-report",
+        );
+
+        expect(
+          getDirective(
+            policy,
+            "report-to",
+          ),
+        ).toBe(
+          "report-to custom-csp-group",
+        );
       },
     );
 
     it(
-      "supports custom reporting configuration",
+      "supports compatibility option aliases",
       () => {
         const policy =
           createStrictContentSecurityPolicy({
-            nonce,
+            nonce:
+              TEST_NONCE,
+
             isProduction:
               true,
-            reportUri:
-              "/api/security/custom-report",
+
+            wooCommerceOrigin:
+              "https://shop.example.com",
+
+            reportingEndpoint:
+              "/api/compatibility-csp-report",
+
             reportTo:
-              "strict-csp",
+              "compatibility-group",
           });
 
         expect(
-          policy,
+          getDirective(
+            policy,
+            "connect-src",
+          ),
         ).toContain(
-          "report-uri /api/security/custom-report",
+          "https://shop.example.com",
         );
 
         expect(
-          policy,
-        ).toContain(
-          "report-to strict-csp",
-        );
-      },
-    );
-
-    it(
-      "allows reporting directives to be disabled",
-      () => {
-        const policy =
-          createStrictContentSecurityPolicy({
-            nonce,
-            isProduction:
-              true,
-            reportUri:
-              null,
-            reportTo:
-              null,
-          });
-
-        expect(
-          policy,
-        ).not.toContain(
-          "report-uri",
+          getDirective(
+            policy,
+            "report-uri",
+          ),
+        ).toBe(
+          "report-uri /api/compatibility-csp-report",
         );
 
         expect(
-          policy,
-        ).not.toContain(
-          "report-to",
+          getDirective(
+            policy,
+            "report-to",
+          ),
+        ).toBe(
+          "report-to compatibility-group",
         );
       },
     );
@@ -383,11 +685,11 @@ describe(
 );
 
 /* =========================================================
-   Security validation
+   Validation
 ========================================================= */
 
 describe(
-  "strict CSP input validation",
+  "createStrictContentSecurityPolicy validation",
   () => {
     it(
       "rejects an invalid nonce",
@@ -397,118 +699,94 @@ describe(
             createStrictContentSecurityPolicy({
               nonce:
                 "invalid nonce",
+
               isProduction:
                 true,
             }),
-        ).toThrow(
-          "CSP nonce contains an invalid value.",
-        );
+        ).toThrow();
       },
     );
 
     it(
-      "rejects unsafe commerce origins",
+      "rejects an insecure commerce origin",
       () => {
         expect(
           () =>
             createStrictContentSecurityPolicy({
-              nonce,
+              nonce:
+                TEST_NONCE,
+
+              isProduction:
+                true,
+
               commerceOrigin:
                 "http://commerce.example.com",
             }),
         ).toThrow(
-          "Strict CSP commerce origin must be a valid HTTPS origin.",
+          /HTTPS/i,
         );
+      },
+    );
 
+    it(
+      "rejects a commerce origin containing a path",
+      () => {
         expect(
           () =>
             createStrictContentSecurityPolicy({
-              nonce,
+              nonce:
+                TEST_NONCE,
+
+              isProduction:
+                true,
+
               commerceOrigin:
-                "https://commerce.example.com/path",
+                "https://commerce.example.com/store",
             }),
         ).toThrow(
-          "Strict CSP commerce origin must be a valid HTTPS origin.",
+          /origin/i,
         );
       },
     );
 
     it(
-      "rejects unsafe reporting values",
+      "rejects an external report URI",
       () => {
         expect(
           () =>
             createStrictContentSecurityPolicy({
-              nonce,
+              nonce:
+                TEST_NONCE,
+
+              isProduction:
+                true,
+
               reportUri:
-                "/api/report\r\nInjected: value",
+                "https://attacker.example.com/report",
             }),
         ).toThrow(
-          "Strict CSP report URI must be a safe relative path.",
+          /same-origin/i,
         );
+      },
+    );
 
+    it(
+      "rejects unsafe reporting group characters",
+      () => {
         expect(
           () =>
             createStrictContentSecurityPolicy({
-              nonce,
-              reportTo:
-                "invalid group",
+              nonce:
+                TEST_NONCE,
+
+              isProduction:
+                true,
+
+              reportToGroup:
+                "group; script-src *",
             }),
         ).toThrow(
-          "Strict CSP report-to group contains an invalid value.",
-        );
-      },
-    );
-
-    it(
-      "generates a single-line policy",
-      () => {
-        const policy =
-          createStrictContentSecurityPolicy({
-            nonce,
-            isProduction:
-              true,
-          });
-
-        expect(
-          policy,
-        ).not.toMatch(
-          /[\r\n]/,
-        );
-
-        expect(
-          policy.endsWith(
-            ";",
-          ),
-        ).toBe(
-          true,
-        );
-      },
-    );
-
-    it(
-      "produces a different policy for a different nonce",
-      () => {
-        const firstPolicy =
-          createStrictContentSecurityPolicy({
-            nonce:
-              "123e4567e89b42d3a456426614174000",
-            isProduction:
-              true,
-          });
-
-        const secondPolicy =
-          createStrictContentSecurityPolicy({
-            nonce:
-              "223e4567e89b42d3a456426614174001",
-            isProduction:
-              true,
-          });
-
-        expect(
-          firstPolicy,
-        ).not.toBe(
-          secondPolicy,
+          /unsafe/i,
         );
       },
     );

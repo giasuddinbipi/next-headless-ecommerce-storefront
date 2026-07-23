@@ -23,10 +23,20 @@ const isCi =
     process.env.CI,
   );
 
+const isExternalTarget =
+  Boolean(
+    externalBaseUrl,
+  );
+
+const previewBypassSecret =
+  process.env
+    .STRICT_CSP_VERIFY_BYPASS_SECRET
+    ?.trim();
+
 /*
- * Playwright webServer.env expects string values.
+ * Playwright webServer.env requires string values.
  * Remove undefined values while preserving the current
- * shell environment for the spawned Next.js process.
+ * environment for the local Next.js process.
  */
 const inheritedEnvironment =
   Object.fromEntries(
@@ -42,7 +52,43 @@ const inheritedEnvironment =
         typeof entry[1] ===
         "string",
     ),
-  );
+  ) as Record<
+    string,
+    string
+  >;
+
+/*
+ * Headers used only for external Preview or Production
+ * deployments.
+ *
+ * x-vercel-skip-toolbar prevents Vercel Toolbar resources
+ * from interfering with strict CSP tests.
+ *
+ * The protection-bypass headers allow Playwright to access
+ * protected Preview deployments.
+ */
+const externalExtraHttpHeaders:
+  Record<
+    string,
+    string
+  > |
+  undefined =
+  isExternalTarget
+    ? {
+        "x-vercel-skip-toolbar":
+          "1",
+
+        ...(previewBypassSecret
+          ? {
+              "x-vercel-protection-bypass":
+                previewBypassSecret,
+
+              "x-vercel-set-bypass-cookie":
+                "true",
+            }
+          : {}),
+      }
+    : undefined;
 
 /* =========================================================
    Playwright configuration
@@ -55,8 +101,14 @@ export default defineConfig({
   outputDir:
     "./test-results",
 
+  /*
+   * Local tests can run in parallel.
+   *
+   * External deployments run sequentially to avoid several
+   * expensive SSR requests running simultaneously.
+   */
   fullyParallel:
-    true,
+    !isExternalTarget,
 
   forbidOnly:
     isCi,
@@ -64,19 +116,26 @@ export default defineConfig({
   retries:
     isCi
       ? 2
-      : 0,
+      : isExternalTarget
+        ? 1
+        : 0,
 
   workers:
-    isCi
+    isCi ||
+    isExternalTarget
       ? 1
       : undefined,
 
   timeout:
-    30_000,
+    isExternalTarget
+      ? 90_000
+      : 30_000,
 
   expect: {
     timeout:
-      10_000,
+      isExternalTarget
+        ? 20_000
+        : 10_000,
   },
 
   reporter: [
@@ -100,6 +159,13 @@ export default defineConfig({
     baseURL:
       baseUrl,
 
+    /*
+     * For external deployments this disables Vercel Toolbar
+     * and authenticates protected Preview requests.
+     */
+    extraHTTPHeaders:
+      externalExtraHttpHeaders,
+
     trace:
       "retain-on-failure",
 
@@ -110,10 +176,14 @@ export default defineConfig({
       "retain-on-failure",
 
     actionTimeout:
-      10_000,
+      isExternalTarget
+        ? 20_000
+        : 10_000,
 
     navigationTimeout:
-      20_000,
+      isExternalTarget
+        ? 60_000
+        : 20_000,
 
     ignoreHTTPSErrors:
       false,
@@ -133,11 +203,11 @@ export default defineConfig({
   ],
 
   /*
-   * E2E_BASE_URL means an external deployment is being
-   * tested, so no local Next.js server is required.
+   * When E2E_BASE_URL exists, Playwright tests that external
+   * deployment and does not start a local server.
    *
-   * Otherwise, Playwright builds and starts the app on
-   * port 3100 using a production server.
+   * Otherwise, Playwright builds the project and starts a
+   * production Next.js server on port 3100.
    */
   webServer:
     externalBaseUrl
@@ -165,14 +235,25 @@ export default defineConfig({
             ...inheritedEnvironment,
 
             /*
-             * Auth.js must trust the Host header used by
-             * the isolated local E2E production server.
+             * Allow Auth.js to accept the isolated local
+             * E2E server host.
              */
             AUTH_TRUST_HOST:
               "true",
 
             AUTH_URL:
               localBaseUrl,
+
+            /*
+             * Local E2E tests use compatibility CSP.
+             * Strict enforcement is tested against Preview
+             * and Production deployments.
+             */
+            STRICT_CSP_RUNTIME_MODE:
+              "disabled",
+
+            CSP_DEPLOYMENT_MODE:
+              "report-only",
           },
         },
 });

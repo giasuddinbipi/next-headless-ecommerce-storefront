@@ -1,11 +1,29 @@
 import {
+  assertValidCspNonce,
   createQuotedCspNonceSource,
 } from "./csp-nonce";
 
-import {
-  DEFAULT_CSP_REPORT_TO_GROUP,
-  DEFAULT_CSP_REPORT_URI,
-} from "./content-security-policy";
+/* =========================================================
+   Defaults
+========================================================= */
+
+export const DEFAULT_COMMERCE_ORIGIN =
+  "https://cms.globalizedhost.com";
+
+export const DEFAULT_CSP_REPORT_URI =
+  "/api/security/csp-report";
+
+export const DEFAULT_CSP_REPORT_TO_GROUP =
+  "csp-endpoint";
+
+/*
+ * This exact style attribute was reported by Chromium
+ * during the strict-CSP Home → Shop production E2E flow.
+ *
+ * Keep the raw hash exported for tests and diagnostics.
+ */
+export const REQUIRED_STYLE_ATTRIBUTE_HASH =
+  "sha256-ZDrxqUOB4m/L0JWL/+gS52g1CRH0l/qwMhjTw5Z/Fsc=";
 
 /* =========================================================
    Types
@@ -13,326 +31,458 @@ import {
 
 export type StrictContentSecurityPolicyOptions =
   Readonly<{
-    nonce: string;
-    isProduction?: boolean;
-    commerceOrigin?: string;
-    reportUri?: string | null;
-    reportTo?: string | null;
+    nonce:
+      string;
+
+    isProduction?:
+      boolean;
+
+    commerceOrigin?:
+      string;
+
+    /*
+     * Compatibility alias for callers that describe the
+     * commerce origin specifically as WooCommerce.
+     */
+    wooCommerceOrigin?:
+      string;
+
+    reportUri?:
+      string;
+
+    /*
+     * Compatibility alias for reportUri.
+     */
+    reportingEndpoint?:
+      string;
+
+    reportToGroup?:
+      string;
+
+    /*
+     * Compatibility alias for reportToGroup.
+     */
+    reportTo?:
+      string;
   }>;
 
-/* =========================================================
-   Constants
-========================================================= */
-
-export const DEFAULT_COMMERCE_ORIGIN =
-  "https://cms.globalizedhost.com";
-
-const REPORT_URI_PATTERN =
-  /^\/[A-Za-z0-9/_\-.]{0,511}$/;
-
-const REPORT_TO_GROUP_PATTERN =
-  /^[a-z][a-z0-9_-]{0,63}$/;
+export type CreateStrictContentSecurityPolicyOptions =
+  StrictContentSecurityPolicyOptions;
 
 /* =========================================================
-   Internal validation
+   Validation
 ========================================================= */
 
-function normalizeHttpsOrigin(
-  value: string,
+function resolveCommerceOrigin(
+  value:
+    string,
 ): string {
-  const trimmed =
+  const trimmedValue =
     value.trim();
 
-  let parsedUrl: URL;
+  let parsedUrl:
+    URL;
 
   try {
     parsedUrl =
       new URL(
-        trimmed,
+        trimmedValue,
       );
   } catch {
     throw new Error(
-      "Strict CSP commerce origin must be a valid HTTPS origin.",
+      "The strict CSP commerce origin must be a valid absolute URL.",
     );
   }
 
   if (
     parsedUrl.protocol !==
-      "https:" ||
+    "https:"
+  ) {
+    throw new Error(
+      "The strict CSP commerce origin must use HTTPS.",
+    );
+  }
+
+  if (
     parsedUrl.username ||
-    parsedUrl.password ||
+    parsedUrl.password
+  ) {
+    throw new Error(
+      "The strict CSP commerce origin must not contain credentials.",
+    );
+  }
+
+  if (
     parsedUrl.pathname !==
       "/" ||
     parsedUrl.search ||
     parsedUrl.hash
   ) {
     throw new Error(
-      "Strict CSP commerce origin must be a valid HTTPS origin.",
+      "The strict CSP commerce origin must contain only an origin without a path, query or fragment.",
     );
   }
 
   return parsedUrl.origin;
 }
 
-function normalizeReportUri(
+function resolveReportUri(
   value:
-    string | null | undefined,
-): string | null {
-  if (
-    value ===
-      null
-  ) {
-    return null;
-  }
-
-  const normalized =
-    (
-      value ??
-      DEFAULT_CSP_REPORT_URI
-    ).trim();
-
-  if (
-    !REPORT_URI_PATTERN.test(
-      normalized,
-    ) ||
-    /[\r\n]/.test(
-      normalized,
-    )
-  ) {
-    throw new Error(
-      "Strict CSP report URI must be a safe relative path.",
-    );
-  }
-
-  return normalized;
-}
-
-function normalizeReportToGroup(
-  value:
-    string | null | undefined,
-): string | null {
-  if (
-    value ===
-      null
-  ) {
-    return null;
-  }
-
-  const normalized =
-    (
-      value ??
-      DEFAULT_CSP_REPORT_TO_GROUP
-    )
-      .trim()
-      .toLowerCase();
-
-  if (
-    !REPORT_TO_GROUP_PATTERN.test(
-      normalized,
-    )
-  ) {
-    throw new Error(
-      "Strict CSP report-to group contains an invalid value.",
-    );
-  }
-
-  return normalized;
-}
-
-function createDirective(
-  name: string,
-  sources: readonly string[],
+    string,
 ): string {
+  const trimmedValue =
+    value.trim();
+
   if (
-    sources.length ===
-    0
+    !trimmedValue.startsWith(
+      "/",
+    ) ||
+    trimmedValue.startsWith(
+      "//",
+    )
   ) {
-    return name;
+    throw new Error(
+      "The strict CSP report URI must be a same-origin absolute path.",
+    );
   }
 
-  return `${name} ${sources.join(" ")}`;
+  if (
+    /[\r\n;,\s]/.test(
+      trimmedValue,
+    )
+  ) {
+    throw new Error(
+      "The strict CSP report URI contains unsafe characters.",
+    );
+  }
+
+  return trimmedValue;
+}
+
+function resolveReportToGroup(
+  value:
+    string,
+): string {
+  const trimmedValue =
+    value.trim();
+
+  /*
+   * Reporting group names are emitted directly into a CSP
+   * directive, so restrict them to a conservative token.
+   */
+  if (
+    !/^[A-Za-z0-9_-]{1,64}$/.test(
+      trimmedValue,
+    )
+  ) {
+    throw new Error(
+      "The strict CSP report-to group contains unsafe characters.",
+    );
+  }
+
+  return trimmedValue;
 }
 
 /* =========================================================
-   Strict policy builder
+   Directive helpers
+========================================================= */
+
+function joinDirective(
+  directive:
+    string,
+  sources:
+    readonly string[],
+): string {
+  return [
+    directive,
+    ...sources,
+  ].join(
+    " ",
+  );
+}
+
+function createScriptSources(
+  nonceSource:
+    string,
+  isProduction:
+    boolean,
+): readonly string[] {
+  const sources:
+    string[] =
+    [
+      "'self'",
+      nonceSource,
+      "'strict-dynamic'",
+      "https:",
+    ];
+
+  if (
+    !isProduction
+  ) {
+    /*
+     * Next.js development tooling uses eval-based source
+     * transforms. Production must never receive this.
+     */
+    sources.push(
+      "'unsafe-eval'",
+    );
+  }
+
+  return sources;
+}
+
+function createStyleElementSources(
+  nonceSource:
+    string,
+  isProduction:
+    boolean,
+): readonly string[] {
+  const sources:
+    string[] =
+    [
+      "'self'",
+      nonceSource,
+    ];
+
+  if (
+    !isProduction
+  ) {
+    /*
+     * Development tooling may inject style elements that
+     * do not carry a nonce.
+     */
+    sources.push(
+      "'unsafe-inline'",
+    );
+  }
+
+  return sources;
+}
+
+function createStyleAttributeSources(
+  isProduction:
+    boolean,
+): readonly string[] {
+  if (
+    !isProduction
+  ) {
+    return [
+      "'unsafe-inline'",
+    ];
+  }
+
+  /*
+   * Do not enable global unsafe-inline in production.
+   *
+   * unsafe-hashes allows only the explicitly listed style
+   * attribute hash below.
+   */
+  return [
+    "'unsafe-hashes'",
+    `'${REQUIRED_STYLE_ATTRIBUTE_HASH}'`,
+  ];
+}
+
+function createConnectSources(
+  commerceOrigin:
+    string,
+  isProduction:
+    boolean,
+): readonly string[] {
+  const sources:
+    string[] =
+    [
+      "'self'",
+      commerceOrigin,
+    ];
+
+  if (
+    !isProduction
+  ) {
+    sources.push(
+      "http:",
+      "https:",
+      "ws:",
+      "wss:",
+    );
+  }
+
+  return sources;
+}
+
+/* =========================================================
+   Policy builder
 ========================================================= */
 
 export function createStrictContentSecurityPolicy(
   options:
     StrictContentSecurityPolicyOptions,
 ): string {
-  const isProduction =
-    options.isProduction ??
-    process.env.NODE_ENV ===
-      "production";
+  assertValidCspNonce(
+    options.nonce,
+  );
 
   const nonceSource =
     createQuotedCspNonceSource(
       options.nonce,
     );
 
+  const isProduction =
+    options.isProduction ??
+    process.env.NODE_ENV ===
+      "production";
+
   const commerceOrigin =
-    normalizeHttpsOrigin(
+    resolveCommerceOrigin(
       options.commerceOrigin ??
+        options.wooCommerceOrigin ??
         DEFAULT_COMMERCE_ORIGIN,
     );
 
   const reportUri =
-    normalizeReportUri(
-      options.reportUri,
+    resolveReportUri(
+      options.reportUri ??
+        options.reportingEndpoint ??
+        DEFAULT_CSP_REPORT_URI,
     );
 
   const reportToGroup =
-    normalizeReportToGroup(
-      options.reportTo,
+    resolveReportToGroup(
+      options.reportToGroup ??
+        options.reportTo ??
+        DEFAULT_CSP_REPORT_TO_GROUP,
     );
 
-  const scriptSources: string[] = [
-    "'self'",
-    nonceSource,
-    "'strict-dynamic'",
-  ];
+  const directives:
+    string[] =
+    [
+      joinDirective(
+        "default-src",
+        [
+          "'self'",
+        ],
+      ),
 
-  /*
-   * React and Next.js development tooling may require eval
-   * for debugging. It must never appear in production.
-   */
-  if (
-    !isProduction
-  ) {
-    scriptSources.push(
-      "'unsafe-eval'",
-    );
-  }
+      joinDirective(
+        "script-src",
+        createScriptSources(
+          nonceSource,
+          isProduction,
+        ),
+      ),
 
-  /*
-   * This HTTPS fallback helps browsers that do not apply
-   * strict-dynamic. Modern supporting browsers rely on the
-   * nonce trust chain.
-   */
-  scriptSources.push(
-    "https:",
-  );
+      joinDirective(
+        "style-src",
+        createStyleElementSources(
+          nonceSource,
+          isProduction,
+        ),
+      ),
 
-  const styleSources: string[] = [
-    "'self'",
-    nonceSource,
-  ];
+      joinDirective(
+        "style-src-attr",
+        createStyleAttributeSources(
+          isProduction,
+        ),
+      ),
 
-  /*
-   * Development tooling may inject styles without a nonce.
-   * Production remains nonce-based.
-   */
-  if (
-    !isProduction
-  ) {
-    styleSources.push(
-      "'unsafe-inline'",
-    );
-  }
+      joinDirective(
+        "img-src",
+        [
+          "'self'",
+          "data:",
+          "blob:",
+          commerceOrigin,
+        ],
+      ),
 
-  const directives: string[] = [
-    createDirective(
-      "default-src",
-      [
-        "'self'",
-      ],
-    ),
+      joinDirective(
+        "font-src",
+        [
+          "'self'",
+          "data:",
+        ],
+      ),
 
-    createDirective(
-      "script-src",
-      scriptSources,
-    ),
+      joinDirective(
+        "connect-src",
+        createConnectSources(
+          commerceOrigin,
+          isProduction,
+        ),
+      ),
 
-    createDirective(
-      "style-src",
-      styleSources,
-    ),
+      joinDirective(
+        "media-src",
+        [
+          "'self'",
+        ],
+      ),
 
-    createDirective(
-      "img-src",
-      [
-        "'self'",
-        "blob:",
-        "data:",
-        commerceOrigin,
-      ],
-    ),
+      joinDirective(
+        "worker-src",
+        [
+          "'self'",
+          "blob:",
+        ],
+      ),
 
-    createDirective(
-      "font-src",
-      [
-        "'self'",
-        "data:",
-      ],
-    ),
+      joinDirective(
+        "manifest-src",
+        [
+          "'self'",
+        ],
+      ),
 
-    createDirective(
-      "connect-src",
-      [
-        "'self'",
-        commerceOrigin,
-      ],
-    ),
+      joinDirective(
+        "frame-src",
+        [
+          "'none'",
+        ],
+      ),
 
-    createDirective(
-      "media-src",
-      [
-        "'self'",
-        commerceOrigin,
-      ],
-    ),
+      joinDirective(
+        "object-src",
+        [
+          "'none'",
+        ],
+      ),
 
-    createDirective(
-      "worker-src",
-      [
-        "'self'",
-        "blob:",
-      ],
-    ),
+      joinDirective(
+        "base-uri",
+        [
+          "'self'",
+        ],
+      ),
 
-    createDirective(
-      "manifest-src",
-      [
-        "'self'",
-      ],
-    ),
+      joinDirective(
+        "form-action",
+        [
+          "'self'",
+        ],
+      ),
 
-    createDirective(
-      "object-src",
-      [
-        "'none'",
-      ],
-    ),
+      joinDirective(
+        "frame-ancestors",
+        [
+          "'none'",
+        ],
+      ),
 
-    createDirective(
-      "base-uri",
-      [
-        "'self'",
-      ],
-    ),
+      joinDirective(
+        "report-uri",
+        [
+          reportUri,
+        ],
+      ),
 
-    createDirective(
-      "form-action",
-      [
-        "'self'",
-      ],
-    ),
-
-    createDirective(
-      "frame-src",
-      [
-        "'none'",
-      ],
-    ),
-
-    createDirective(
-      "frame-ancestors",
-      [
-        "'none'",
-      ],
-    ),
-  ];
+      joinDirective(
+        "report-to",
+        [
+          reportToGroup,
+        ],
+      ),
+    ];
 
   if (
     isProduction
@@ -342,44 +492,7 @@ export function createStrictContentSecurityPolicy(
     );
   }
 
-  if (
-    reportUri
-  ) {
-    directives.push(
-      createDirective(
-        "report-uri",
-        [
-          reportUri,
-        ],
-      ),
-    );
-  }
-
-  if (
-    reportToGroup
-  ) {
-    directives.push(
-      createDirective(
-        "report-to",
-        [
-          reportToGroup,
-        ],
-      ),
-    );
-  }
-
-  const policy =
-    `${directives.join("; ")};`;
-
-  if (
-    /[\r\n]/.test(
-      policy,
-    )
-  ) {
-    throw new Error(
-      "Generated strict CSP contains invalid control characters.",
-    );
-  }
-
-  return policy;
+  return `${directives.join(
+    "; ",
+  )};`;
 }
