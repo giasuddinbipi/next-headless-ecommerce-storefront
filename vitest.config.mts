@@ -150,6 +150,8 @@ export default defineConfig({
   "src/lib/csp-violation-analysis.ts",
   "src/lib/csp-report-protection.ts",
   "src/lib/csp-deployment.ts",
+  "src/lib/csp-nonce.ts",
+  "src/lib/strict-content-security-policy.ts",
 ],
 
       exclude: [
