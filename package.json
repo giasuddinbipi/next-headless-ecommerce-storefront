@@ -16,7 +16,11 @@
     "health:verify": "node scripts/verify-checkout-health.mjs",
     "csp:audit": "node scripts/audit-production-csp.mjs",
     "csp:verify-deployment": "node scripts/verify-csp-deployment.mjs",
-    "csp:verify-strict": "node scripts/verify-strict-csp-deployment.mjs"
+    "csp:verify-strict": "node scripts/verify-strict-csp-deployment.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8",
@@ -29,6 +33,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",

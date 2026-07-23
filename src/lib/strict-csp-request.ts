@@ -290,21 +290,25 @@ export function createStrictCspRequestState(
     );
 
   const policy =
-    createStrictContentSecurityPolicy({
+  createStrictContentSecurityPolicy({
+    nonce:
       nonce,
 
-      isProduction:
-        options.isProduction,
+    isProduction:
+      options.isProduction,
 
-      commerceOrigin:
-        options.commerceOrigin,
+    commerceOrigin:
+      options.commerceOrigin ??
+      undefined,
 
-      reportUri:
-        options.reportUri,
+    reportUri:
+      options.reportUri ??
+      undefined,
 
-      reportTo:
-        options.reportTo,
-    });
+    reportTo:
+      options.reportTo ??
+      undefined,
+  });
 
   /*
    * Next.js reads this request CSP header during rendering

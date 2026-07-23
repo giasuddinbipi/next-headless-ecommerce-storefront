@@ -23,10 +23,15 @@ const isCi =
     process.env.CI,
   );
 
+const isExternalTarget =
+  Boolean(
+    externalBaseUrl,
+  );
+
 /*
- * Playwright webServer.env expects string values.
- * Remove undefined values while preserving the current
- * shell environment for the spawned Next.js process.
+ * Playwright webServer.env requires string values.
+ * Remove undefined entries while preserving the current
+ * environment for the spawned local Next.js process.
  */
 const inheritedEnvironment =
   Object.fromEntries(
@@ -55,8 +60,14 @@ export default defineConfig({
   outputDir:
     "./test-results",
 
+  /*
+   * Local E2E tests may run in parallel.
+   *
+   * External deployment tests run sequentially to avoid
+   * sending multiple expensive SSR requests at once.
+   */
   fullyParallel:
-    true,
+    !isExternalTarget,
 
   forbidOnly:
     isCi,
@@ -64,19 +75,26 @@ export default defineConfig({
   retries:
     isCi
       ? 2
-      : 0,
+      : isExternalTarget
+        ? 1
+        : 0,
 
   workers:
-    isCi
+    isCi ||
+    isExternalTarget
       ? 1
       : undefined,
 
   timeout:
-    30_000,
+    isExternalTarget
+      ? 90_000
+      : 30_000,
 
   expect: {
     timeout:
-      10_000,
+      isExternalTarget
+        ? 20_000
+        : 10_000,
   },
 
   reporter: [
@@ -110,10 +128,14 @@ export default defineConfig({
       "retain-on-failure",
 
     actionTimeout:
-      10_000,
+      isExternalTarget
+        ? 20_000
+        : 10_000,
 
     navigationTimeout:
-      20_000,
+      isExternalTarget
+        ? 60_000
+        : 20_000,
 
     ignoreHTTPSErrors:
       false,
@@ -133,11 +155,11 @@ export default defineConfig({
   ],
 
   /*
-   * E2E_BASE_URL means an external deployment is being
-   * tested, so no local Next.js server is required.
+   * When E2E_BASE_URL is configured, Playwright tests the
+   * external deployment and does not start a local server.
    *
-   * Otherwise, Playwright builds and starts the app on
-   * port 3100 using a production server.
+   * Otherwise, it builds the application and starts a
+   * production Next.js server on port 3100.
    */
   webServer:
     externalBaseUrl
@@ -165,14 +187,24 @@ export default defineConfig({
             ...inheritedEnvironment,
 
             /*
-             * Auth.js must trust the Host header used by
-             * the isolated local E2E production server.
+             * Trust the isolated local E2E server host so
+             * Auth.js session requests do not return 500.
              */
             AUTH_TRUST_HOST:
               "true",
 
             AUTH_URL:
               localBaseUrl,
+
+            /*
+             * Keep local E2E execution in the safe CSP
+             * compatibility configuration.
+             */
+            STRICT_CSP_RUNTIME_MODE:
+              "disabled",
+
+            CSP_DEPLOYMENT_MODE:
+              "report-only",
           },
         },
 });

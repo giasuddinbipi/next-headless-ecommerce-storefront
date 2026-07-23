@@ -1,52 +1,115 @@
 import Image from "next/image";
 import Link from "next/link";
+import {
+  unstable_rethrow,
+} from "next/navigation";
 
 import {
   getProducts,
   type WooCommerceProduct,
 } from "@/lib/woocommerce";
 
-function stripHtml(value: string): string {
+function stripHtml(
+  value: string,
+): string {
   return value
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<\/p>/gi, " ")
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#039;/gi, "'")
-    .replace(/\s+/g, " ")
+    .replace(
+      /<br\s*\/?>/gi,
+      " ",
+    )
+    .replace(
+      /<\/p>/gi,
+      " ",
+    )
+    .replace(
+      /<[^>]*>/g,
+      "",
+    )
+    .replace(
+      /&nbsp;/gi,
+      " ",
+    )
+    .replace(
+      /&amp;/gi,
+      "&",
+    )
+    .replace(
+      /&quot;/gi,
+      '"',
+    )
+    .replace(
+      /&#039;/gi,
+      "'",
+    )
+    .replace(
+      /\s+/g,
+      " ",
+    )
     .trim();
 }
 
-function formatPrice(value: string): string {
-  const price = Number(value);
+function formatPrice(
+  value: string,
+): string {
+  const price =
+    Number(
+      value,
+    );
 
-  if (!value || !Number.isFinite(price)) {
+  if (
+    !value ||
+    !Number.isFinite(
+      price,
+    )
+  ) {
     return "View options";
   }
 
-  return new Intl.NumberFormat("en-BD", {
-    style: "currency",
-    currency: "BDT",
-    maximumFractionDigits: 0,
-  }).format(price);
+  return new Intl.NumberFormat(
+    "en-BD",
+    {
+      style:
+        "currency",
+
+      currency:
+        "BDT",
+
+      maximumFractionDigits:
+        0,
+    },
+  ).format(
+    price,
+  );
 }
 
-function formatRating(value: string): string {
-  const rating = Number(value);
+function formatRating(
+  value: string,
+): string {
+  const rating =
+    Number(
+      value,
+    );
 
-  if (!Number.isFinite(rating)) {
+  if (
+    !Number.isFinite(
+      rating,
+    )
+  ) {
     return "0.0";
   }
 
-  return rating.toFixed(1);
+  return rating.toFixed(
+    1,
+  );
 }
 
 function getStockLabel(
-  stockStatus: WooCommerceProduct["stock_status"],
+  stockStatus:
+    WooCommerceProduct["stock_status"],
 ): string {
-  switch (stockStatus) {
+  switch (
+    stockStatus
+  ) {
     case "instock":
       return "In stock";
 
@@ -62,9 +125,12 @@ function getStockLabel(
 }
 
 function getStockClassName(
-  stockStatus: WooCommerceProduct["stock_status"],
+  stockStatus:
+    WooCommerceProduct["stock_status"],
 ): string {
-  switch (stockStatus) {
+  switch (
+    stockStatus
+  ) {
     case "instock":
       return "text-green-700";
 
@@ -80,23 +146,50 @@ function getStockClassName(
 }
 
 export default async function Home() {
-  let products: WooCommerceProduct[] = [];
-  let productsError = "";
+  let products:
+    WooCommerceProduct[] =
+    [];
+
+  let productsError =
+    "";
 
   try {
-    const productsResult = await getProducts({
-      page: 1,
-      perPage: 8,
-      orderBy: "date",
-      order: "desc",
-    });
+    const productsResult =
+      await getProducts({
+        page:
+          1,
+
+        perPage:
+          8,
+
+        orderBy:
+          "date",
+
+        order:
+          "desc",
+      });
 
     /*
-     * getProducts() এখন object return করে।
-     * Product array পাওয়া যায় result.products থেকে।
+     * getProducts() returns an object.
+     * The product array is available
+     * through result.products.
      */
-    products = productsResult.products;
-  } catch (error) {
+    products =
+      productsResult.products;
+  } catch (
+    error
+  ) {
+    /*
+     * Preserve framework-controlled exceptions such as
+     * dynamic-rendering signals, redirect() and notFound().
+     *
+     * Genuine WooCommerce or application errors continue
+     * to the fallback handling below.
+     */
+    unstable_rethrow(
+      error,
+    );
+
     console.error(
       "Homepage products loading failed:",
       error,
@@ -242,7 +335,8 @@ export default async function Home() {
           )}
 
           {!productsError &&
-            products.length === 0 && (
+            products.length ===
+              0 && (
               <div className="mt-8 rounded-2xl border border-gray-200 bg-white p-10 text-center shadow-sm">
                 <h3 className="text-xl font-bold text-gray-900">
                   No products found
@@ -257,12 +351,16 @@ export default async function Home() {
             )}
 
           {!productsError &&
-            products.length > 0 && (
+            products.length >
+              0 && (
               <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {products.map(
-                  (product) => {
+                  (
+                    product,
+                  ) => {
                     const productImage =
-                      product.images?.[0];
+                      product
+                        .images?.[0];
 
                     const description =
                       stripHtml(
@@ -277,7 +375,9 @@ export default async function Home() {
 
                     return (
                       <article
-                        key={product.id}
+                        key={
+                          product.id
+                        }
                         className="group relative overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-lg"
                       >
                         {product.on_sale && (
@@ -312,7 +412,8 @@ export default async function Home() {
 
                         <div className="p-5">
                           {product.categories
-                            ?.length > 0 && (
+                            ?.length >
+                            0 && (
                             <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">
                               {
                                 product
@@ -326,17 +427,22 @@ export default async function Home() {
                             href={`/products/${product.slug}`}
                           >
                             <h3 className="mt-2 line-clamp-2 text-lg font-bold leading-7 text-gray-900 transition hover:text-blue-700">
-                              {product.name}
+                              {
+                                product.name
+                              }
                             </h3>
                           </Link>
 
                           {description && (
                             <p className="mt-3 line-clamp-2 text-sm leading-6 text-gray-600">
-                              {description}
+                              {
+                                description
+                              }
                             </p>
                           )}
 
-                          {ratingCount > 0 && (
+                          {ratingCount >
+                            0 && (
                             <div className="mt-3 flex items-center gap-2 text-sm">
                               <span
                                 aria-hidden="true"
@@ -352,7 +458,11 @@ export default async function Home() {
                               </span>
 
                               <span className="text-gray-500">
-                                ({ratingCount})
+                                (
+                                {
+                                  ratingCount
+                                }
+                                )
                               </span>
                             </div>
                           )}
