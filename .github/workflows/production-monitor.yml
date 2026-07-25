@@ -1,0 +1,96 @@
+name: Production Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-monitor
+  cancel-in-progress: true
+
+env:
+  PRODUCTION_BASE_URL: https://next-headless-ecommerce-storefront.vercel.app
+
+jobs:
+  health:
+    name: Production health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check homepage and security headers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          headers_file="$(mktemp)"
+
+          curl             --fail             --silent             --show-error             --location             --max-time 30             --retry 3             --retry-delay 2             --dump-header "${headers_file}"             --output /dev/null             "${PRODUCTION_BASE_URL}/"
+
+          grep -Eiq '^content-security-policy:' "${headers_file}"
+          grep -Eiq "'strict-dynamic'" "${headers_file}"
+          grep -Eiq '^strict-transport-security:' "${headers_file}"
+          grep -Eiq '^x-content-type-options:[[:space:]]*nosniff' "${headers_file}"
+          grep -Eiq '^x-frame-options:[[:space:]]*DENY' "${headers_file}"
+
+      - name: Check liveness endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response="$(
+            curl               --fail               --silent               --show-error               --location               --max-time 30               --retry 3               --retry-delay 2               "${PRODUCTION_BASE_URL}/api/health/live"
+          )"
+
+          printf '%s' "${response}" |
+            grep -Eq '"status"[[:space:]]*:[[:space:]]*"alive"'
+
+          printf '%s' "${response}" |
+            grep -Eq '"check"[[:space:]]*:[[:space:]]*"liveness"'
+
+  e2e:
+    name: Production E2E
+    needs:
+      - health
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      E2E_BASE_URL: https://next-headless-ecommerce-storefront.vercel.app
+      STRICT_CSP_RUNTIME_MODE: enforce
+      CSP_DEPLOYMENT_MODE: report-only
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run production E2E tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-playwright-artifacts
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
