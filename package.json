@@ -24,14 +24,14 @@
     "audit:perf": "lhci autorun"
   },
   "dependencies": {
-    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/ratelimit": "^2.1.0",
     "@upstash/redis": "^1.38.0",
-    "next": "^16.2.12",
+    "next": "^16.3.5",
     "next-auth": "^5.0.0-beta.32",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "zod": "^4.4.3",
-    "zustand": "^5.0.14"
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.6.5",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
